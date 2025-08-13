@@ -36,6 +36,7 @@ import (
 	"github.com/kardianos/service"
 	nats "github.com/nats-io/nats.go"
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/ugorji/go/codec"
 	"github.com/sirupsen/logrus"
 	trmm "github.com/wh1te909/trmm-shared"
 )
@@ -318,7 +319,7 @@ func (a *Agent) NewCMDOpts() *CmdOptions {
 	}
 }
 
-func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
+func (a *Agent) CmdV2(c *CmdOptions, stream bool, nc *nats.Conn) CmdStatus {
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout*time.Second)
 	defer cancel()
@@ -371,6 +372,9 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				}
 				fmt.Fprintln(&stdoutBuf, line)
 				a.Logger.Debugln(line)
+				if stream && len(strings.TrimSpace(a.AgentID)) > 0 && nc != nil {
+					streamLineToNats(line, a.AgentID, nc)
+				}
 
 			case line, open := <-envCmd.Stderr:
 				if !open {
@@ -379,6 +383,9 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				}
 				fmt.Fprintln(&stderrBuf, line)
 				a.Logger.Debugln(line)
+				if stream && len(strings.TrimSpace(a.AgentID)) > 0 && nc != nil {
+					streamLineToNats(line, a.AgentID, nc)
+				}
 			}
 		}
 	}()
@@ -428,6 +435,13 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 	}
 	a.Logger.Debugf("%+v\n", ret)
 	return ret
+}
+
+func streamLineToNats(line string, agentID string, nc *nats.Conn) {
+	var resp []byte
+	ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+	_ = ret.Encode(line)
+	_ = nc.Publish(agentID+".output", resp)
 }
 
 func (a *Agent) GetCPULoadAvg() int {
@@ -728,7 +742,7 @@ func (a *Agent) RunTask(id int) error {
 				opts.Shell = action.Shell
 				opts.Command = action.Command
 				opts.Timeout = time.Duration(action.Timeout)
-				out := a.CmdV2(opts)
+				out := a.CmdV2(opts, false, nil)
 
 				if out.Status.Error != nil {
 					a.Logger.Debugln("RunTask() cmd: ", out.Status.Error.Error())

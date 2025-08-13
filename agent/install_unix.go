@@ -60,7 +60,7 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 			a.Logger.Infoln("Existing meshagent found, attempting to remove...")
 			uopts := a.NewCMDOpts()
 			uopts.Command = fmt.Sprintf("%s -fulluninstall", a.MeshSystemEXE)
-			uout := a.CmdV2(uopts)
+			uout := a.CmdV2(uopts,false,nil)
 			fmt.Println(uout.Stdout)
 			time.Sleep(1 * time.Second)
 		}
@@ -69,7 +69,7 @@ func (a *Agent) checkExistingAndRemove(silent bool) {
 			a.Logger.Infoln("Existing tacticalagent plist found, attempting to remove...")
 			opts := a.NewCMDOpts()
 			opts.Command = fmt.Sprintf("launchctl bootout system %s", macPlistPath)
-			a.CmdV2(opts)
+			a.CmdV2(opts,false,nil)
 		}
 
 		os.RemoveAll(defaultMacMeshSvcDir)

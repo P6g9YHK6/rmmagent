@@ -44,6 +44,7 @@ type NatsMsg struct {
 	EnvVars                []string          `json:"env_vars"`
 	NushellEnableConfig    bool              `json:"nushell_enable_config"`
 	DenoDefaultPermissions string            `json:"deno_default_permissions"`
+	Stream                 bool              `json:"stream"`
 }
 
 var (
@@ -200,7 +201,7 @@ func (a *Agent) RunRPC() {
 					opts.Shell = p.Data["shell"]
 					opts.Command = p.Data["command"]
 					opts.Timeout = time.Duration(p.Timeout)
-					out := a.CmdV2(opts)
+					out := a.CmdV2(opts, p.Stream, nc)
 					tmp := ""
 					if len(out.Stdout) > 0 {
 						tmp += out.Stdout
@@ -353,7 +354,7 @@ func (a *Agent) RunRPC() {
 				} else {
 					opts := a.NewCMDOpts()
 					opts.Command = "shutdown -h now"
-					a.CmdV2(opts)
+					a.CmdV2(opts, false, nil)
 				}
 			}()
 
@@ -369,7 +370,7 @@ func (a *Agent) RunRPC() {
 				} else {
 					opts := a.NewCMDOpts()
 					opts.Command = "reboot"
-					a.CmdV2(opts)
+					a.CmdV2(opts, false, nil)
 				}
 			}()
 		case "needsreboot":
