@@ -35,6 +35,7 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	psHost "github.com/shirou/gopsutil/v3/host"
+	nats "github.com/nats-io/nats.go"
 	"github.com/spf13/viper"
 	trmm "github.com/wh1te909/trmm-shared"
 	"golang.org/x/text/cases"
@@ -953,7 +954,7 @@ func (a *Agent) installMesh(meshbin, exe, proxy string) (string, error) {
 	return "not implemented", nil
 }
 
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
+func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, nc *nats.Conn)  (output [2]string, e error) {
 	return [2]string{"", ""}, nil
 }
 

@@ -187,7 +187,7 @@ func (a *Agent) RunRPC() {
 
 				switch runtime.GOOS {
 				case "windows":
-					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser)
+					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser, p.Stream, &a.AgentID, nc)
 					a.Logger.Debugln(out)
 					if out[1] != "" {
 						ret.Encode(out[1])

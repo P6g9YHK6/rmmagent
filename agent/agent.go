@@ -724,7 +724,7 @@ func (a *Agent) RunTask(id int) error {
 
 			switch runtime.GOOS {
 			case "windows":
-				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser)
+				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser, false, nil, nil)
 				if err != nil {
 					a.Logger.Debugln(err)
 				}

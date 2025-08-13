@@ -12,11 +12,13 @@ https://license.tacticalrmm.com
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +38,9 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/gonutz/w32/v2"
 	"github.com/kardianos/service"
+	nats "github.com/nats-io/nats.go"
 	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/ugorji/go/codec"
 	wapf "github.com/wh1te909/go-win64api"
 	trmm "github.com/wh1te909/trmm-shared"
 	"golang.org/x/sys/windows"
@@ -328,7 +332,7 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
+func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, nc *nats.Conn) (output [2]string, e error) {
 	var (
 		outb     bytes.Buffer
 		errb     bytes.Buffer
@@ -378,8 +382,16 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	}
 
 	cmd.SysProcAttr = sysProcAttr
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
+
+	if stream && agentID != nil {
+		stdoutPipe, _ := cmd.StdoutPipe()
+		stderrPipe, _ := cmd.StderrPipe()
+		go streamLines(stdoutPipe, *agentID, nc)
+		go streamLines(stderrPipe, *agentID, nc)
+	} else {
+		cmd.Stdout = &outb
+		cmd.Stderr = &errb
+	}
 	cmd.Start()
 
 	pid := int32(cmd.Process.Pid)
@@ -403,6 +415,17 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	}
 
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
+}
+
+func streamLines(pipe io.ReadCloser, agentID string, nc *nats.Conn) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var resp []byte
+		ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+		_ = ret.Encode(line)
+		_ = nc.Publish(agentID+".output", resp)
+	}
 }
 
 // GetDisks returns a list of fixed disks
@@ -558,7 +581,7 @@ func (a *Agent) PlatVer() (string, error) {
 func EnablePing() {
 	args := make([]string, 0)
 	cmd := `netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow`
-	_, err := CMDShell("cmd", args, cmd, 10, false, false)
+	_, err := CMDShell("cmd", args, cmd, 10, false, false, false, nil, nil)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -579,7 +602,7 @@ func EnableRDP() {
 
 	args := make([]string, 0)
 	cmd := `netsh advfirewall firewall set rule group="remote desktop" new enable=Yes`
-	_, cerr := CMDShell("cmd", args, cmd, 10, false, false)
+	_, cerr := CMDShell("cmd", args, cmd, 10, false, false, false, nil, nil)
 	if cerr != nil {
 		fmt.Println(cerr)
 	}
@@ -606,15 +629,15 @@ func DisableSleepHibernate() {
 		wg.Add(1)
 		go func(c string) {
 			defer wg.Done()
-			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /set%svalueindex scheme_current sub_buttons lidaction 0", c), 5, false, false)
-			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -standby-timeout-%s 0", c), 5, false, false)
-			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -hibernate-timeout-%s 0", c), 5, false, false)
-			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -disk-timeout-%s 0", c), 5, false, false)
-			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -monitor-timeout-%s 0", c), 5, false, false)
+			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /set%svalueindex scheme_current sub_buttons lidaction 0", c), 5, false, false, false, nil, nil)
+			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -standby-timeout-%s 0", c), 5, false, false, false, nil, nil)
+			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -hibernate-timeout-%s 0", c), 5, false, false, false, nil, nil)
+			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -disk-timeout-%s 0", c), 5, false, false, false, nil, nil)
+			_, _ = CMDShell("cmd", args, fmt.Sprintf("powercfg /x -monitor-timeout-%s 0", c), 5, false, false, false, nil, nil)
 		}(i)
 	}
 	wg.Wait()
-	_, _ = CMDShell("cmd", args, "powercfg -S SCHEME_CURRENT", 5, false, false)
+	_, _ = CMDShell("cmd", args, "powercfg -S SCHEME_CURRENT", 5, false, false, false, nil, nil)
 }
 
 // NewCOMObject creates a new COM object for the specifed ProgramID.
