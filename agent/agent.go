@@ -312,6 +312,7 @@ type CmdOptions struct {
 	EnvVars      []string
 	Stream       bool
 	Nc           *nats.Conn // nats connection
+	CmdID        string
 }
 
 func (a *Agent) NewCMDOpts() *CmdOptions {
@@ -375,7 +376,7 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				fmt.Fprintln(&stdoutBuf, line)
 				a.Logger.Debugln(line)
 				if c.Stream {
-					streamLineToNats(line, a.AgentID, c.Nc)
+					streamLineToNats(line, a.AgentID, c.CmdID, c.Nc)
 				}
 
 			case line, open := <-envCmd.Stderr:
@@ -386,7 +387,7 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				fmt.Fprintln(&stderrBuf, line)
 				a.Logger.Debugln(line)
 				if c.Stream {
-					streamLineToNats(line, a.AgentID, c.Nc)
+					streamLineToNats(line, a.AgentID, c.CmdID, c.Nc)
 				}
 			}
 		}
@@ -439,11 +440,12 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 	return ret
 }
 
-func streamLineToNats(line string, agentID string, nc *nats.Conn) {
+func streamLineToNats(line string, agentID string, cmdID string, nc *nats.Conn) {
 	var resp []byte
 	ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
 	_ = ret.Encode(line)
-	_ = nc.Publish(agentID+".output", resp)
+	subject := agentID + ".cmdoutput." + cmdID
+	_ = nc.Publish(subject, resp)
 }
 
 func (a *Agent) GetCPULoadAvg() int {

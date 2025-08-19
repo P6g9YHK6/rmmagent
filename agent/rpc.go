@@ -207,6 +207,11 @@ func (a *Agent) RunRPC() {
 					opts.Timeout = time.Duration(p.Timeout)
 					opts.Stream = p.Stream
 					opts.Nc = nc
+					cmdID := ""
+					if val, ok := p.Data["cmd_id"]; ok {
+						cmdID = val
+					}
+					opts.CmdID = cmdID
 					out := a.CmdV2(opts)
 					tmp := ""
 					if len(out.Stdout) > 0 {
