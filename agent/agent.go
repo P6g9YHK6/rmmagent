@@ -310,6 +310,8 @@ type CmdOptions struct {
 	IsExecutable bool
 	Detached     bool
 	EnvVars      []string
+	Stream       bool
+	Nc           *nats.Conn // nats connection
 }
 
 func (a *Agent) NewCMDOpts() *CmdOptions {
@@ -319,7 +321,7 @@ func (a *Agent) NewCMDOpts() *CmdOptions {
 	}
 }
 
-func (a *Agent) CmdV2(c *CmdOptions, stream bool, nc *nats.Conn) CmdStatus {
+func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout*time.Second)
 	defer cancel()
@@ -372,8 +374,8 @@ func (a *Agent) CmdV2(c *CmdOptions, stream bool, nc *nats.Conn) CmdStatus {
 				}
 				fmt.Fprintln(&stdoutBuf, line)
 				a.Logger.Debugln(line)
-				if stream && len(strings.TrimSpace(a.AgentID)) > 0 && nc != nil {
-					streamLineToNats(line, a.AgentID, nc)
+				if c.Stream {
+					streamLineToNats(line, a.AgentID, c.Nc)
 				}
 
 			case line, open := <-envCmd.Stderr:
@@ -383,8 +385,8 @@ func (a *Agent) CmdV2(c *CmdOptions, stream bool, nc *nats.Conn) CmdStatus {
 				}
 				fmt.Fprintln(&stderrBuf, line)
 				a.Logger.Debugln(line)
-				if stream && len(strings.TrimSpace(a.AgentID)) > 0 && nc != nil {
-					streamLineToNats(line, a.AgentID, nc)
+				if c.Stream {
+					streamLineToNats(line, a.AgentID, c.Nc)
 				}
 			}
 		}
@@ -724,7 +726,7 @@ func (a *Agent) RunTask(id int) error {
 
 			switch runtime.GOOS {
 			case "windows":
-				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser, false, nil, nil)
+				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser, false, nil, nil, nil)
 				if err != nil {
 					a.Logger.Debugln(err)
 				}
@@ -742,7 +744,7 @@ func (a *Agent) RunTask(id int) error {
 				opts.Shell = action.Shell
 				opts.Command = action.Command
 				opts.Timeout = time.Duration(action.Timeout)
-				out := a.CmdV2(opts, false, nil)
+				out := a.CmdV2(opts)
 
 				if out.Status.Error != nil {
 					a.Logger.Debugln("RunTask() cmd: ", out.Status.Error.Error())

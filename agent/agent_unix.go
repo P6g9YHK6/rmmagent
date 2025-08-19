@@ -94,7 +94,7 @@ func (a *Agent) SystemRebootRequired() (bool, error) {
 			// https://man7.org/linux/man-pages/man1/needs-restarting.1.html
 			// -r Only report whether a full reboot is required (exit code 1) or not (exit code 0).
 			opts.Command = fmt.Sprintf("%s -r", bin)
-			out := a.CmdV2(opts, false, nil)
+			out := a.CmdV2(opts)
 
 			if out.Status.Error != nil {
 				a.Logger.Debugln("SystemRebootRequired(): ", out.Status.Error.Error())
@@ -267,7 +267,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 	opts.EnvVars = envVars
 	opts.Timeout = time.Duration(timeout)
 	a.Logger.Debugln("RunScript():", opts.Shell, opts.Args)
-	out := a.CmdV2(opts, false, nil)
+	out := a.CmdV2(opts)
 	retError := ""
 	if out.Status.Error != nil {
 		retError += CleanString(out.Status.Error.Error())
@@ -286,7 +286,7 @@ func SetDetached() *syscall.SysProcAttr {
 func (a *Agent) seEnforcing() bool {
 	opts := a.NewCMDOpts()
 	opts.Command = "getenforce"
-	out := a.CmdV2(opts, false, nil)
+	out := a.CmdV2(opts)
 	return out.Status.Exit == 0 && strings.Contains(out.Stdout, "Enforcing")
 }
 
@@ -349,7 +349,7 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 	if runtime.GOOS == "linux" && a.seEnforcing() {
 		se := a.NewCMDOpts()
 		se.Command = fmt.Sprintf("restorecon -rv %s", self)
-		out := a.CmdV2(se,false,nil)
+		out := a.CmdV2(se)
 		a.Logger.Debugf("%+v\n", out)
 	}
 
@@ -364,7 +364,7 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 		return nil
 	}
 
-	a.CmdV2(opts, false, nil)
+	a.CmdV2(opts)
 	return nil
 }
 
@@ -386,7 +386,7 @@ func (a *Agent) AgentUninstall(code string) {
 		opts.Args = []string{"uninstall"}
 	}
 	opts.Detached = true
-	a.CmdV2(opts, false, nil)
+	a.CmdV2(opts)
 }
 
 func (a *Agent) NixMeshNodeID() string {
@@ -405,7 +405,7 @@ func (a *Agent) NixMeshNodeID() string {
 	opts.Command = "-nodeid"
 
 	for !meshSuccess {
-		out := a.CmdV2(opts, false, nil)
+		out := a.CmdV2(opts)
 		meshNodeID = out.Stdout
 		a.Logger.Debugln("Stdout:", out.Stdout)
 		a.Logger.Debugln("Stderr:", out.Stderr)
@@ -437,7 +437,7 @@ func (a *Agent) RecoverMesh() {
 	default:
 		opts.Command = def
 	}
-	a.CmdV2(opts, false, nil)
+	a.CmdV2(opts)
 	a.SyncMeshNodeID()
 }
 
@@ -506,7 +506,7 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 	if runtime.GOOS == "darwin" {
 		opts := a.NewCMDOpts()
 		opts.Command = "sysctl hw.model"
-		out := a.CmdV2(opts, false, nil)
+		out := a.CmdV2(opts)
 		wmiInfo["make_model"] = strings.ReplaceAll(out.Stdout, "hw.model: ", "")
 	}
 
@@ -555,7 +555,7 @@ func (a *Agent) GetWMIInfo() map[string]interface{} {
 		opts := a.NewCMDOpts()
 		serialCmd := `ioreg -l | grep IOPlatformSerialNumber | grep -o '"IOPlatformSerialNumber" = "[^"]*"' | awk -F'"' '{print $4}'`
 		opts.Command = serialCmd
-		out := a.CmdV2(opts, false, nil)
+		out := a.CmdV2(opts)
 		if out.Status.Error != nil {
 			a.Logger.Debugln("ioreg get serial number: ", out.Status.Error.Error())
 			wmiInfo["serialnumber"] = "n/a"
@@ -954,7 +954,7 @@ func (a *Agent) installMesh(meshbin, exe, proxy string) (string, error) {
 	return "not implemented", nil
 }
 
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, nc *nats.Conn)  (output [2]string, e error) {
+func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
 	return [2]string{"", ""}, nil
 }
 

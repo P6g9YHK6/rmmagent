@@ -187,7 +187,11 @@ func (a *Agent) RunRPC() {
 
 				switch runtime.GOOS {
 				case "windows":
-					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser, p.Stream, &a.AgentID, nc)
+					cmdID := ""
+					if val, ok := p.Data["cmd_id"]; ok {
+						cmdID = val
+					}
+					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser, p.Stream, &a.AgentID, &cmdID, nc)
 					a.Logger.Debugln(out)
 					if out[1] != "" {
 						ret.Encode(out[1])
@@ -201,7 +205,9 @@ func (a *Agent) RunRPC() {
 					opts.Shell = p.Data["shell"]
 					opts.Command = p.Data["command"]
 					opts.Timeout = time.Duration(p.Timeout)
-					out := a.CmdV2(opts, p.Stream, nc)
+					opts.Stream = p.Stream
+					opts.Nc = nc
+					out := a.CmdV2(opts)
 					tmp := ""
 					if len(out.Stdout) > 0 {
 						tmp += out.Stdout
@@ -354,7 +360,7 @@ func (a *Agent) RunRPC() {
 				} else {
 					opts := a.NewCMDOpts()
 					opts.Command = "shutdown -h now"
-					a.CmdV2(opts, false, nil)
+					a.CmdV2(opts)
 				}
 			}()
 
@@ -370,7 +376,7 @@ func (a *Agent) RunRPC() {
 				} else {
 					opts := a.NewCMDOpts()
 					opts.Command = "reboot"
-					a.CmdV2(opts, false, nil)
+					a.CmdV2(opts)
 				}
 			}()
 		case "needsreboot":

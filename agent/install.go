@@ -202,7 +202,7 @@ func (a *Agent) Install(i *Installer) {
 			opts := a.NewCMDOpts()
 			opts.Command = fmt.Sprintf("%s -install --installPath=%s", meshOutput, nixMeshDir)
 			opts.Timeout = i.Timeout
-			out := a.CmdV2(opts,false,nil)
+			out := a.CmdV2(opts)
 			if out.Status.Exit != 0 {
 				a.Logger.Fatalln("Error installing mesh agent:", out.Stderr)
 			}
@@ -301,7 +301,7 @@ func (a *Agent) Install(i *Installer) {
 		os.WriteFile(macPlistPath, []byte(svc), 0644)
 		opts := a.NewCMDOpts()
 		opts.Command = fmt.Sprintf("launchctl bootstrap system %s", macPlistPath)
-		a.CmdV2(opts,false,nil)
+		a.CmdV2(opts)
 	}
 
 	if runtime.GOOS == "windows" {
