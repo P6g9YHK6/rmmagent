@@ -428,7 +428,7 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		// done
 	}
 
-	// Wait for goroutine to print everything
+// Wait for goroutine to print everything
 	<-doneChan
 
 	ret := CmdStatus{
@@ -437,6 +437,19 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		Stderr: CleanString(stderrBuf.String()),
 	}
 	a.Logger.Debugf("%+v\n", ret)
+
+	if c.Stream {
+		finalPayload := map[string]interface{}{
+			"done":      true,
+			"exit_code": finalStatus.Exit,
+		}
+		var finalResp []byte
+		retEnc := codec.NewEncoderBytes(&finalResp, new(codec.MsgpackHandle))
+		_ = retEnc.Encode(finalPayload)
+		subject := a.AgentID + ".cmdoutput." + c.CmdID
+		_ = c.Nc.Publish(subject, finalResp)
+	}
+
 	return ret
 }
 
