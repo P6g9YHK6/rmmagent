@@ -332,12 +332,10 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
+func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached, runasuser, stream bool, agentID, cmdID *string, nc *nats.Conn) ([2]string, error) {
 	var (
-		outb     bytes.Buffer
-		errb     bytes.Buffer
-		cmd      *exec.Cmd
-		timedOut = false
+		outb, errb bytes.Buffer
+		cmd        *exec.Cmd
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
@@ -347,22 +345,31 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	cmdExe := getCMDExe()
 	powershell := getPowershellExe()
 
+	// Construct the command
 	if len(cmdArgs) > 0 && command == "" {
 		switch shell {
 		case "cmd":
-			cmdArgs = append([]string{"/C"}, cmdArgs...)
-			cmd = exec.Command(cmdExe, cmdArgs...)
+			cmd = exec.Command(cmdExe, append([]string{"/C"}, cmdArgs...)...)
 		case "powershell":
-			cmdArgs = append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)
-			cmd = exec.Command(powershell, cmdArgs...)
+			cmd = exec.Command(powershell, append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)...)
 		}
 	} else {
 		switch shell {
 		case "cmd":
-			cmd = exec.Command(cmdExe)
-			sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
+			if stream {
+				command = fmt.Sprintf(`%s & echo.`, command)
+				cmd = exec.Command(cmdExe, "/Q", "/C", command)
+			} else {
+				cmd = exec.Command(cmdExe)
+				sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
+			}
 		case "powershell":
-			cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
+			if stream {
+				command = fmt.Sprintf(`%s | ForEach-Object { $_ }`, command)
+				cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", "-Command", command)
+			} else {
+				cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
+			}
 		}
 	}
 
@@ -383,49 +390,58 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 
 	cmd.SysProcAttr = sysProcAttr
 
+	// Configure output
 	if stream {
-		stdoutPipe, _ := cmd.StdoutPipe()
-		stderrPipe, _ := cmd.StderrPipe()
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return [2]string{"", CleanString(err.Error())}, err
+		}
+		stderrPipe, err := cmd.StderrPipe()
+		if err != nil {
+			return [2]string{"", CleanString(err.Error())}, err
+		}
 		go streamLines(stdoutPipe, *agentID, *cmdID, nc)
 		go streamLines(stderrPipe, *agentID, *cmdID, nc)
+	} else {
+		cmd.Stdout = &outb
+		cmd.Stderr = &errb
 	}
 
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
-	cmd.Start()
+	// Start and monitor command
+	if err := cmd.Start(); err != nil {
+		return [2]string{"", CleanString(err.Error())}, err
+	}
 
-	pid := int32(cmd.Process.Pid)
-
-	go func(p int32) {
-
+	go func(pid int32) {
 		<-ctx.Done()
+		_ = KillProc(pid)
+	}(int32(cmd.Process.Pid))
 
-		_ = KillProc(p)
-		timedOut = true
-	}(pid)
-
-	err := cmd.Wait()
-
-	if timedOut {
-		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
-	}
-
-	if err != nil {
+	if err := cmd.Wait(); err != nil {
 		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
 	}
 
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
-func streamLines(pipe io.ReadCloser, agentID string, cmdID string, nc *nats.Conn) {
-	scanner := bufio.NewScanner(pipe)
-	subject := agentID + ".cmdoutput." + cmdID
-	for scanner.Scan() {
-		line := scanner.Text()
-		var resp []byte
-		ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
-		_ = ret.Encode(line)
-		_ = nc.Publish(subject, resp)
+func streamLines(pipe io.ReadCloser, agentID, cmdID string, nc *nats.Conn) {
+	defer pipe.Close()
+	subject := fmt.Sprintf("%s.cmdoutput.%s", agentID, cmdID)
+	reader := bufio.NewReader(pipe)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			line = strings.TrimRight(line, "\r\n")
+			var resp []byte
+			ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+			if err := ret.Encode(line); err == nil {
+				_ = nc.Publish(subject, resp)
+			}
+		}
+		if err != nil {
+			break
+		}
 	}
 }
 
