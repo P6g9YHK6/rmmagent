@@ -373,7 +373,7 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 		}
 	}
 
-	// https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+// https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
 	if detached {
 		sysProcAttr.CreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
 	}
@@ -412,12 +412,29 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 		return [2]string{"", CleanString(err.Error())}, err
 	}
 
+	// Timeout handling
 	go func(pid int32) {
 		<-ctx.Done()
 		_ = KillProc(pid)
 	}(int32(cmd.Process.Pid))
 
-	if err := cmd.Wait(); err != nil {
+	// Wait for completion
+	err := cmd.Wait()
+
+	if stream {
+		finalPayload := map[string]interface{}{
+			"done":      true,
+			"exit_code": 0,
+		}
+		var finalResp []byte
+		retEnc := codec.NewEncoderBytes(&finalResp, new(codec.MsgpackHandle))
+		_ = retEnc.Encode(finalPayload)
+		subject := *agentID + ".cmdoutput." + *cmdID
+		_ = nc.Publish(subject, finalResp)
+	}
+
+	// Return error after final message is sent
+	if err != nil {
 		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
 	}
 
