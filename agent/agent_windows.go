@@ -332,134 +332,110 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
-func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached, runasuser, stream bool, agentID, cmdID *string, nc *nats.Conn) ([2]string, error) {
-	var (
-		outb, errb bytes.Buffer
-		cmd        *exec.Cmd
-	)
+func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
+    var (
+        outb     bytes.Buffer
+        errb     bytes.Buffer
+        cmd      *exec.Cmd
+        timedOut = false
+    )
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
+    ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+    defer cancel()
 
-	sysProcAttr := &windows.SysProcAttr{}
-	cmdExe := getCMDExe()
-	powershell := getPowershellExe()
+    sysProcAttr := &windows.SysProcAttr{}
+    cmdExe := getCMDExe()
+    powershell := getPowershellExe()
 
-	// Construct the command
-	if len(cmdArgs) > 0 && command == "" {
-		switch shell {
-		case "cmd":
-			cmd = exec.Command(cmdExe, append([]string{"/C"}, cmdArgs...)...)
-		case "powershell":
-			cmd = exec.Command(powershell, append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)...)
-		}
-	} else {
-		switch shell {
-		case "cmd":
-			if stream {
-				command = fmt.Sprintf(`%s & echo.`, command)
-				cmd = exec.Command(cmdExe, "/Q", "/C", command)
-			} else {
-				cmd = exec.Command(cmdExe)
-				sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
-			}
-		case "powershell":
-			if stream {
-				command = fmt.Sprintf(`%s | ForEach-Object { $_ }`, command)
-				cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", "-Command", command)
-			} else {
-				cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
-			}
-		}
-	}
+    if len(cmdArgs) > 0 && command == "" {
+        switch shell {
+        case "cmd":
+            cmdArgs = append([]string{"/C"}, cmdArgs...)
+            cmd = exec.Command(cmdExe, cmdArgs...)
+        case "powershell":
+            cmdArgs = append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)
+            cmd = exec.Command(powershell, cmdArgs...)
+        }
+    } else {
+        switch shell {
+        case "cmd":
+            cmd = exec.Command(cmdExe)
+            sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
+        case "powershell":
+            cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
+        }
+    }
 
-// https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
-	if detached {
-		sysProcAttr.CreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
-	}
+    // https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+    if detached {
+        sysProcAttr.CreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
+    }
 
-	if runasuser {
-		token, err := wintoken.GetInteractiveToken(wintoken.TokenImpersonation)
-		if err != nil {
-			return [2]string{"", CleanString(err.Error())}, err
-		}
-		defer token.Close()
-		sysProcAttr.Token = syscall.Token(token.Token())
-		sysProcAttr.HideWindow = true
-	}
+    if runasuser {
+        token, err := wintoken.GetInteractiveToken(wintoken.TokenImpersonation)
+        if err != nil {
+            return [2]string{"", CleanString(err.Error())}, err
+        }
+        defer token.Close()
+        sysProcAttr.Token = syscall.Token(token.Token())
+        sysProcAttr.HideWindow = true
+    }
 
-	cmd.SysProcAttr = sysProcAttr
+    cmd.SysProcAttr = sysProcAttr
 
-	// Configure output
-	if stream {
-		stdoutPipe, err := cmd.StdoutPipe()
-		if err != nil {
-			return [2]string{"", CleanString(err.Error())}, err
-		}
-		stderrPipe, err := cmd.StderrPipe()
-		if err != nil {
-			return [2]string{"", CleanString(err.Error())}, err
-		}
-		go streamLines(stdoutPipe, *agentID, *cmdID, nc)
-		go streamLines(stderrPipe, *agentID, *cmdID, nc)
-	} else {
+    if stream {
+        stdoutPipe, _ := cmd.StdoutPipe()
+        stderrPipe, _ := cmd.StderrPipe()
+        go streamLines(stdoutPipe, *agentID, *cmdID, nc)
+        go streamLines(stderrPipe, *agentID, *cmdID, nc)
+    } else {
 		cmd.Stdout = &outb
 		cmd.Stderr = &errb
 	}
+    cmd.Start()
 
-	// Start and monitor command
-	if err := cmd.Start(); err != nil {
-		return [2]string{"", CleanString(err.Error())}, err
-	}
+    pid := int32(cmd.Process.Pid)
 
-	// Timeout handling
-	go func(pid int32) {
-		<-ctx.Done()
-		_ = KillProc(pid)
-	}(int32(cmd.Process.Pid))
+    go func(p int32) {
 
-	// Wait for completion
-	err := cmd.Wait()
+        <-ctx.Done()
 
-	if stream {
-		finalPayload := map[string]interface{}{
-			"done":      true,
-			"exit_code": 0,
-		}
-		var finalResp []byte
-		retEnc := codec.NewEncoderBytes(&finalResp, new(codec.MsgpackHandle))
-		_ = retEnc.Encode(finalPayload)
-		subject := *agentID + ".cmdoutput." + *cmdID
-		_ = nc.Publish(subject, finalResp)
-	}
+        _ = KillProc(p)
+        timedOut = true
+    }(pid)
 
-	// Return error after final message is sent
-	if err != nil {
-		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
-	}
+    err := cmd.Wait()
 
-	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
+    if timedOut {
+        return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
+    }
+
+    if err != nil {
+        return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
+    }
+
+    return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
-func streamLines(pipe io.ReadCloser, agentID, cmdID string, nc *nats.Conn) {
-	defer pipe.Close()
-	subject := fmt.Sprintf("%s.cmdoutput.%s", agentID, cmdID)
-	reader := bufio.NewReader(pipe)
-
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			line = strings.TrimRight(line, "\r\n")
-			var resp []byte
-			ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
-			if err := ret.Encode(line); err == nil {
-				_ = nc.Publish(subject, resp)
-			}
-		}
-		if err != nil {
-			break
-		}
+func streamLines(pipe io.ReadCloser, agentID string, cmdID string, nc *nats.Conn) {
+    scanner := bufio.NewScanner(pipe)
+    subject := agentID + ".cmdoutput." + cmdID
+    for scanner.Scan() {
+        line := scanner.Text()
+        var resp []byte
+        ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+        _ = ret.Encode(line)
+        _ = nc.Publish(subject, resp)
+    }
+	// Send final 'done' message
+	finalPayload := map[string]interface{}{
+		"done":      true,
+		"exit_code": 0,
 	}
+	var finalResp []byte
+	ret := codec.NewEncoderBytes(&finalResp, new(codec.MsgpackHandle))
+	_ = ret.Encode(finalPayload)
+	_ = nc.Publish(subject, finalResp)
 }
 
 // GetDisks returns a list of fixed disks
