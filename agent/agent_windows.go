@@ -333,100 +333,100 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 }
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
-    var (
-        outb     bytes.Buffer
-        errb     bytes.Buffer
-        cmd      *exec.Cmd
-        timedOut = false
-    )
+	var (
+		outb     bytes.Buffer
+		errb     bytes.Buffer
+		cmd      *exec.Cmd
+		timedOut = false
+	)
 
-    ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
 
-    sysProcAttr := &windows.SysProcAttr{}
-    cmdExe := getCMDExe()
-    powershell := getPowershellExe()
+	sysProcAttr := &windows.SysProcAttr{}
+	cmdExe := getCMDExe()
+	powershell := getPowershellExe()
 
-    if len(cmdArgs) > 0 && command == "" {
-        switch shell {
-        case "cmd":
-            cmdArgs = append([]string{"/C"}, cmdArgs...)
-            cmd = exec.Command(cmdExe, cmdArgs...)
-        case "powershell":
-            cmdArgs = append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)
-            cmd = exec.Command(powershell, cmdArgs...)
-        }
-    } else {
-        switch shell {
-        case "cmd":
-            cmd = exec.Command(cmdExe)
-            sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
-        case "powershell":
-            cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
-        }
-    }
+	if len(cmdArgs) > 0 && command == "" {
+		switch shell {
+		case "cmd":
+			cmdArgs = append([]string{"/C"}, cmdArgs...)
+			cmd = exec.Command(cmdExe, cmdArgs...)
+		case "powershell":
+			cmdArgs = append([]string{"-NonInteractive", "-NoProfile"}, cmdArgs...)
+			cmd = exec.Command(powershell, cmdArgs...)
+		}
+	} else {
+		switch shell {
+		case "cmd":
+			cmd = exec.Command(cmdExe)
+			sysProcAttr.CmdLine = fmt.Sprintf("%s /C %s", cmdExe, command)
+		case "powershell":
+			cmd = exec.Command(powershell, "-NonInteractive", "-NoProfile", command)
+		}
+	}
 
-    // https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
-    if detached {
-        sysProcAttr.CreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
-    }
+	// https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+	if detached {
+		sysProcAttr.CreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
+	}
 
-    if runasuser {
-        token, err := wintoken.GetInteractiveToken(wintoken.TokenImpersonation)
-        if err != nil {
-            return [2]string{"", CleanString(err.Error())}, err
-        }
-        defer token.Close()
-        sysProcAttr.Token = syscall.Token(token.Token())
-        sysProcAttr.HideWindow = true
-    }
+	if runasuser {
+		token, err := wintoken.GetInteractiveToken(wintoken.TokenImpersonation)
+		if err != nil {
+			return [2]string{"", CleanString(err.Error())}, err
+		}
+		defer token.Close()
+		sysProcAttr.Token = syscall.Token(token.Token())
+		sysProcAttr.HideWindow = true
+	}
 
-    cmd.SysProcAttr = sysProcAttr
+	cmd.SysProcAttr = sysProcAttr
 
-    if stream {
-        stdoutPipe, _ := cmd.StdoutPipe()
-        stderrPipe, _ := cmd.StderrPipe()
-        go streamLines(stdoutPipe, *agentID, *cmdID, nc)
-        go streamLines(stderrPipe, *agentID, *cmdID, nc)
-    } else {
+	if stream {
+		stdoutPipe, _ := cmd.StdoutPipe()
+		stderrPipe, _ := cmd.StderrPipe()
+		go streamLines(stdoutPipe, *agentID, *cmdID, nc)
+		go streamLines(stderrPipe, *agentID, *cmdID, nc)
+	} else {
 		cmd.Stdout = &outb
 		cmd.Stderr = &errb
 	}
-    cmd.Start()
+	cmd.Start()
 
-    pid := int32(cmd.Process.Pid)
+	pid := int32(cmd.Process.Pid)
 
-    go func(p int32) {
+	go func(p int32) {
 
-        <-ctx.Done()
+		<-ctx.Done()
 
-        _ = KillProc(p)
-        timedOut = true
-    }(pid)
+		_ = KillProc(p)
+		timedOut = true
+	}(pid)
 
-    err := cmd.Wait()
+	err := cmd.Wait()
 
-    if timedOut {
-        return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
-    }
+	if timedOut {
+		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
+	}
 
-    if err != nil {
-        return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
-    }
+	if err != nil {
+		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
+	}
 
-    return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
+	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
 func streamLines(pipe io.ReadCloser, agentID string, cmdID string, nc *nats.Conn) {
-    scanner := bufio.NewScanner(pipe)
-    subject := agentID + ".cmdoutput." + cmdID
-    for scanner.Scan() {
-        line := scanner.Text()
-        var resp []byte
-        ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
-        _ = ret.Encode(line)
-        _ = nc.Publish(subject, resp)
-    }
+	scanner := bufio.NewScanner(pipe)
+	subject := agentID + ".cmdoutput." + cmdID
+	for scanner.Scan() {
+		line := scanner.Text()
+		var resp []byte
+		ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+		_ = ret.Encode(CleanString(line))
+		_ = nc.Publish(subject, resp)
+	}
 	// Send final 'done' message
 	finalPayload := map[string]interface{}{
 		"done":      true,
