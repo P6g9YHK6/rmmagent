@@ -334,10 +334,12 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool, stream bool, agentID *string, cmdID *string, nc *nats.Conn) (output [2]string, e error) {
 	var (
-		outb     bytes.Buffer
-		errb     bytes.Buffer
-		cmd      *exec.Cmd
-		timedOut = false
+		outb         bytes.Buffer
+		errb         bytes.Buffer
+		cmd          *exec.Cmd
+		timedOut     = false
+		stdoutWriter io.Closer
+		stderrWriter io.Closer
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
@@ -384,15 +386,30 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	cmd.SysProcAttr = sysProcAttr
 
 	if stream {
-		stdoutPipe, _ := cmd.StdoutPipe()
-		stderrPipe, _ := cmd.StderrPipe()
-		go streamLines(stdoutPipe, *agentID, *cmdID, nc)
-		go streamLines(stderrPipe, *agentID, *cmdID, nc)
+		stdoutReader, sw := io.Pipe()
+		stderrReader, ew := io.Pipe()
+		stdoutWriter = sw
+		stderrWriter = ew
+
+		cmd.Stdout = io.MultiWriter(&outb, sw)
+		cmd.Stderr = io.MultiWriter(&errb, ew)
+
+		go streamLines(stdoutReader, *agentID, *cmdID, nc)
+		go streamLines(stderrReader, *agentID, *cmdID, nc)
 	} else {
 		cmd.Stdout = &outb
 		cmd.Stderr = &errb
 	}
-	cmd.Start()
+	if err := cmd.Start(); err != nil {
+		// If streaming, close the writers to unblock the goroutines
+		if stdoutWriter != nil {
+			stdoutWriter.Close()
+		}
+		if stderrWriter != nil {
+			stderrWriter.Close()
+		}
+		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, err
+	}
 
 	pid := int32(cmd.Process.Pid)
 
@@ -405,6 +422,15 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	}(pid)
 
 	err := cmd.Wait()
+
+	// This sends an EOF to the reader ends of the pipes, which allows
+	// the bufio.Scanner in streamLines to finish and the goroutines to exit.
+	if stdoutWriter != nil {
+		stdoutWriter.Close()
+	}
+	if stderrWriter != nil {
+		stderrWriter.Close()
+	}
 
 	if timedOut {
 		return [2]string{CleanString(outb.String()), CleanString(errb.String())}, ctx.Err()
