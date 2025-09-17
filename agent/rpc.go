@@ -272,6 +272,28 @@ func (a *Agent) RunRPC() {
                 msg.Respond(resp)
             }(payload)
 
+        case "registry_delete_key":
+            go func(p *NatsMsg) {
+             var resp []byte
+             ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+
+             path, ok := p.Data["path"]
+             if !ok || strings.TrimSpace(path) == "" {
+                 _ = ret.Encode(map[string]interface{}{"error": "Missing or empty path"})
+                 msg.Respond(resp)
+                 return
+             }
+
+             err := DeleteRegistryKey(path)
+             if err != nil {
+                 _ = ret.Encode(map[string]interface{}{"error": err.Error()})
+             } else {
+                 _ = ret.Encode(map[string]interface{}{"success": true})
+             }
+
+             msg.Respond(resp)
+            }(payload)			
+
 		case "winservices":
 			go func() {
 				var resp []byte
