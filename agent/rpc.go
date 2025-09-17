@@ -219,6 +219,37 @@ func (a *Agent) RunRPC() {
 				}
 			}(payload)
 
+		case "registry_browse":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+
+				path, ok := p.Data["path"]
+				if !ok || path == "" {
+					_ = ret.Encode(map[string]interface{}{
+						"error": "Missing path",
+					})
+					msg.Respond(resp)
+					return
+				}
+
+				subkeys, values, err := BrowseRegistry(path)
+				if err != nil {
+					_ = ret.Encode(map[string]interface{}{
+						"error": err.Error(),
+					})
+					msg.Respond(resp)
+					return
+				}
+
+				_ = ret.Encode(map[string]interface{}{
+					"path":    path,
+					"subkeys": subkeys,
+					"values":  values,
+				})
+				msg.Respond(resp)
+			}(payload)
+
 		case "winservices":
 			go func() {
 				var resp []byte

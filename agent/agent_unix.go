@@ -957,6 +957,8 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	return [2]string{"", ""}, nil
 }
 
+func BrowseRegistry(path string) ([]string, map[string]string, error) { return nil, nil, nil }
+
 func CMD(exe string, args []string, timeout int, detached bool) (output [2]string, e error) {
 	return [2]string{"", ""}, nil
 }

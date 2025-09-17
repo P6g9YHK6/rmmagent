@@ -328,6 +328,119 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
+// Parse "HKEY_LOCAL_MACHINE\\SOFTWARE" → registry hive + relative path
+func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
+	parts := strings.SplitN(path, "\\", 2)
+	if len(parts) != 2 {
+		return 0, "", errors.New("invalid registry path")
+	}
+
+	var hive registry.Key
+	switch parts[0] {
+	case "HKEY_LOCAL_MACHINE":
+		hive = registry.LOCAL_MACHINE
+	case "HKEY_CURRENT_USER":
+		hive = registry.CURRENT_USER
+	case "HKEY_CLASSES_ROOT":
+		hive = registry.CLASSES_ROOT
+	case "HKEY_USERS":
+		hive = registry.USERS
+	case "HKEY_CURRENT_CONFIG":
+		hive = registry.CURRENT_CONFIG
+	default:
+		return 0, "", errors.New("unknown registry hive")
+	}
+
+	return hive, parts[1], nil
+}
+
+
+
+func BrowseRegistry(path string) ([]string, []map[string]string, error) {
+	// Root case: "Computer" / "computer"
+	if strings.ToLower(path) == "computer" || path == "" {
+		hives := []string{
+			"HKEY_CLASSES_ROOT",
+			"HKEY_CURRENT_USER",
+			"HKEY_LOCAL_MACHINE",
+			"HKEY_USERS",
+			"HKEY_CURRENT_CONFIG",
+		}
+		return hives, nil, nil
+	}
+
+	hive, relPath, err := getRegistryKeyFromPath(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	k, err := registry.OpenKey(hive, relPath, registry.READ)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open key %s: %w", path, err)
+	}
+	defer k.Close()
+
+	subkeys, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read subkeys for %s: %w", path, err)
+	}
+
+	names, err := k.ReadValueNames(-1)
+	if err != nil {
+		return subkeys, nil, fmt.Errorf("failed to read values for %s: %w", path, err)
+	}
+
+	values := []map[string]string{}
+	for _, name := range names {
+		kind, _, err := k.GetValue(name, nil)
+		if err != nil {
+			values = append(values, map[string]string{
+				"name": name,
+				"type": "ERROR",
+				"data": err.Error(),
+			})
+			continue
+		}
+
+		entry := map[string]string{"name": name}
+
+		switch kind {
+		case registry.SZ:
+			entry["type"] = "REG_SZ"
+			if val, _, err := k.GetStringValue(name); err == nil {
+				entry["data"] = val
+			}
+		case registry.EXPAND_SZ:
+			entry["type"] = "REG_EXPAND_SZ"
+			if val, _, err := k.GetStringValue(name); err == nil {
+				entry["data"] = val
+			}
+		case registry.DWORD, registry.DWORD_BIG_ENDIAN:
+			entry["type"] = "REG_DWORD"
+			if val, _, err := k.GetIntegerValue(name); err == nil {
+				entry["data"] = fmt.Sprintf("%d", val)
+			}
+		case registry.QWORD:
+			entry["type"] = "REG_QWORD"
+			if val, _, err := k.GetIntegerValue(name); err == nil {
+				entry["data"] = fmt.Sprintf("%d", val)
+			}
+		case registry.BINARY:
+			entry["type"] = "REG_BINARY"
+			if val, _, err := k.GetBinaryValue(name); err == nil {
+				entry["data"] = fmt.Sprintf("hex:%x", val)
+			}
+		default:
+			entry["type"] = "UNKNOWN"
+			entry["data"] = "<unsupported>"
+		}
+
+		values = append(values, entry)
+	}
+
+	return subkeys, values, nil
+}
+
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
 	var (
 		outb     bytes.Buffer
@@ -381,7 +494,7 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	cmd.Stdout = &outb
 	cmd.Stderr = &errb
 	cmd.Start()
-
+	
 	pid := int32(cmd.Process.Pid)
 
 	go func(p int32) {
