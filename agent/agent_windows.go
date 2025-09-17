@@ -441,6 +441,20 @@ func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 	return subkeys, values, nil
 }
 
+func CreateRegistryKey(path string) error {
+    hive, relPath, err := getRegistryKeyFromPath(path)
+    if err != nil {
+        return fmt.Errorf("parsing registry path: %w", err)
+    }
+
+    k, _, err := registry.CreateKey(hive, relPath, registry.ALL_ACCESS)
+    if err != nil {
+        return fmt.Errorf("failed to create registry key '%s': %w", path, err)
+    }
+    defer k.Close()
+    return nil
+}
+
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
 	var (
 		outb     bytes.Buffer
