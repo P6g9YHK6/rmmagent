@@ -354,8 +354,6 @@ func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	return hive, parts[1], nil
 }
 
-
-
 func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 	// Root case: "Computer" / "computer"
 	if strings.ToLower(path) == "computer" || path == "" {
@@ -442,17 +440,22 @@ func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 }
 
 func CreateRegistryKey(path string) error {
-    hive, relPath, err := getRegistryKeyFromPath(path)
-    if err != nil {
-        return fmt.Errorf("parsing registry path: %w", err)
-    }
+	hive, relPath, err := getRegistryKeyFromPath(path)
+	if err != nil {
+		return fmt.Errorf("parsing registry path: %w", err)
+	}
 
-    k, _, err := registry.CreateKey(hive, relPath, registry.ALL_ACCESS)
-    if err != nil {
-        return fmt.Errorf("failed to create registry key '%s': %w", path, err)
-    }
-    defer k.Close()
-    return nil
+	k, exist, err := registry.CreateKey(hive, relPath, registry.ALL_ACCESS)
+	if err != nil {
+		return fmt.Errorf("failed to create registry key '%s': %w", path, err)
+	}
+	defer k.Close()
+
+	if exist {
+		return fmt.Errorf("registry key '%s' already exists", path)
+	}
+
+	return nil
 }
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
