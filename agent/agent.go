@@ -267,6 +267,7 @@ func New(logger *logrus.Logger, version string) *Agent {
 		SystemDrive:        sd,
 		WinTmpDir:          winTempDir,
 		WinRunAsUserTmpDir: winRunAsUserTmpDir,
+		UnixTmpDir:         ac.UnixTmpDir,
 		MeshInstaller:      "meshagent.exe",
 		MeshSystemEXE:      MeshSysExe,
 		MeshSVC:            meshSvcName,

@@ -165,7 +165,7 @@ func NewAgentConfig() *rmm.AgentConfig {
 		NatsStandardPort: viper.GetString("natsstandardport"),
 		NatsPingInterval: viper.GetInt("natspinginterval"),
 		Insecure:         viper.GetString("insecure"),
-		UnixTmpDir:       viper.GetString("unixtmpdir"),
+		UnixTmpDir:       viper.GetString("tmpdir"),
 	}
 	return ret
 }
