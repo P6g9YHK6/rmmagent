@@ -165,6 +165,7 @@ func NewAgentConfig() *rmm.AgentConfig {
 		NatsStandardPort: viper.GetString("natsstandardport"),
 		NatsPingInterval: viper.GetInt("natspinginterval"),
 		Insecure:         viper.GetString("insecure"),
+		UnixTmpDir:       viper.GetString("unixtmpdir"),
 	}
 	return ret
 }
@@ -173,7 +174,7 @@ func (a *Agent) RunScript(code string, shell string, args []string, timeout int,
 	code = removeWinNewLines(code)
 	content := []byte(code)
 
-	f, err := createNixTmpFile(shell)
+	f, err := createNixTmpFile(a.UnixTmpDir, shell)
 	if err != nil {
 		a.Logger.Errorln("RunScript createNixTmpFile()", err)
 		return "", err.Error(), 85, err
@@ -368,7 +369,7 @@ func (a *Agent) AgentUpdate(url, inno, version string) error {
 }
 
 func (a *Agent) AgentUninstall(code string) {
-	f, err := createNixTmpFile()
+	f, err := createNixTmpFile(a.UnixTmpDir)
 	if err != nil {
 		a.Logger.Errorln("AgentUninstall createNixTmpFile():", err)
 		return

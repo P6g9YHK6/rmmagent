@@ -54,6 +54,7 @@ type Agent struct {
 	EXE                string
 	SystemDrive        string
 	WinTmpDir          string
+	UnixTmpDir         string
 	WinRunAsUserTmpDir string
 	MeshInstaller      string
 	MeshSystemEXE      string
