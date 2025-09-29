@@ -354,15 +354,15 @@ func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	return hive, parts[1], nil
 }
 
-func BrowseRegistry(path string) ([]string, []map[string]string, error) {
+func BrowseRegistry(path string) ([]map[string]interface{}, []map[string]string, error) {
 	// Root case: "Computer" / "computer"
 	if strings.ToLower(path) == "computer" || path == "" {
-		hives := []string{
-			"HKEY_CLASSES_ROOT",
-			"HKEY_CURRENT_USER",
-			"HKEY_LOCAL_MACHINE",
-			"HKEY_USERS",
-			"HKEY_CURRENT_CONFIG",
+		hives := []map[string]interface{}{
+			{"name": "HKEY_CLASSES_ROOT", "hasSubkeys": true},
+			{"name": "HKEY_CURRENT_USER", "hasSubkeys": true},
+			{"name": "HKEY_LOCAL_MACHINE", "hasSubkeys": true},
+			{"name": "HKEY_USERS", "hasSubkeys": true},
+			{"name": "HKEY_CURRENT_CONFIG", "hasSubkeys": true},
 		}
 		return hives, nil, nil
 	}
@@ -383,24 +383,44 @@ func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 		return nil, nil, fmt.Errorf("failed to read subkeys for %s: %w", path, err)
 	}
 
+	// Build subkey list with hasSubkeys flag
+	subkeyInfos := []map[string]interface{}{}
+	for _, sub := range subkeys {
+		hasChildren := false
+
+		// Try to open child key and check if it has subkeys
+		if childKey, err := registry.OpenKey(k, sub, registry.READ); err == nil {
+			if names, _ := childKey.ReadSubKeyNames(1); len(names) > 0 {
+				hasChildren = true
+			}
+			childKey.Close()
+		}
+
+		subkeyInfos = append(subkeyInfos, map[string]interface{}{
+			"name":       sub,
+			"hasSubkeys": hasChildren,
+		})
+	}
+
+	// Values
 	names, err := k.ReadValueNames(-1)
 	if err != nil {
-		return subkeys, nil, fmt.Errorf("failed to read values for %s: %w", path, err)
+		return subkeyInfos, nil, fmt.Errorf("failed to read values for %s: %w", path, err)
 	}
 
 	values := []map[string]string{}
-	for _, name := range names {
-		kind, _, err := k.GetValue(name, nil)
-		if err != nil {
-			values = append(values, map[string]string{
-				"name": name,
-				"type": "ERROR",
-				"data": err.Error(),
-			})
-			continue
-		}
+    for _, name := range names {
+        kind, _, err := k.GetValue(name, nil)
+        if err != nil {
+            values = append(values, map[string]string{
+                "name": name,
+                "type": "ERROR",
+                "data": err.Error(),
+            })
+            continue
+        }
 
-		entry := map[string]string{"name": name}
+        entry := map[string]string{"name": name}
 
 		switch kind {
 		case registry.SZ:
@@ -412,6 +432,11 @@ func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 			entry["type"] = "REG_EXPAND_SZ"
 			if val, _, err := k.GetStringValue(name); err == nil {
 				entry["data"] = val
+			}
+		case registry.MULTI_SZ:
+			entry["type"] = "REG_MULTI_SZ"
+			if val, _, err := k.GetStringsValue(name); err == nil {
+				entry["data"] = strings.Join(val, "; ")
 			}
 		case registry.DWORD, registry.DWORD_BIG_ENDIAN:
 			entry["type"] = "REG_DWORD"
@@ -428,15 +453,24 @@ func BrowseRegistry(path string) ([]string, []map[string]string, error) {
 			if val, _, err := k.GetBinaryValue(name); err == nil {
 				entry["data"] = fmt.Sprintf("hex:%x", val)
 			}
+		case registry.NONE:
+			entry["type"] = "REG_NONE"
+			entry["data"] = ""
 		default:
-			entry["type"] = "UNKNOWN"
-			entry["data"] = "<unsupported>"
+			// Fallback: try to read as string
+			if val, _, err := k.GetStringValue(name); err == nil {
+				entry["type"] = "REG_SZ"
+				entry["data"] = val
+			} else {
+				entry["type"] = fmt.Sprintf("UNKNOWN_%d", kind)
+				entry["data"] = "<unsupported>"
+			}
 		}
 
-		values = append(values, entry)
-	}
+        values = append(values, entry)
+    }
 
-	return subkeys, values, nil
+	return subkeyInfos, values, nil
 }
 
 func CreateRegistryKey(path string) error {
@@ -459,6 +493,7 @@ func CreateRegistryKey(path string) error {
 }
 
 func DeleteRegistryKey(path string) error {
+cleanPath := strings.TrimRight(path, `\`)
  // Disallow deleting root hives directly
  disallowed := []string{
      "HKEY_LOCAL_MACHINE",
@@ -470,8 +505,8 @@ func DeleteRegistryKey(path string) error {
  }
 
  for _, hive := range disallowed {
-     if strings.EqualFold(path, hive) {
-         return fmt.Errorf("deleting root hive '%s' is not allowed", hive)
+     if strings.EqualFold(cleanPath, hive) {
+		 return fmt.Errorf("deleting root hive '%s' is not allowed", hive)
      }
  }
 
@@ -508,6 +543,134 @@ func DeleteRegistryKey(path string) error {
  }
 
  return nil
+}
+
+
+func RenameRegistryKey(oldPath, newPath string) error {
+    // Open old key
+    oldHive, oldRel, err := getRegistryKeyFromPath(oldPath)
+    if err != nil {
+        return fmt.Errorf("invalid old path: %w", err)
+    }
+
+    oldKey, err := registry.OpenKey(oldHive, oldRel, registry.READ)
+    if err != nil {
+        return fmt.Errorf("failed to open old key: %w", err)
+    }
+    defer oldKey.Close()
+
+    // Create new key
+    newHive, newRel, err := getRegistryKeyFromPath(newPath)
+    if err != nil {
+        return fmt.Errorf("invalid new path: %w", err)
+    }
+
+    newKey, _, err := registry.CreateKey(newHive, newRel, registry.ALL_ACCESS)
+    if err != nil {
+        return fmt.Errorf("failed to create new key: %w", err)
+    }
+    defer newKey.Close()
+
+    // Copy values
+    names, err := oldKey.ReadValueNames(-1)
+    if err != nil {
+        return fmt.Errorf("failed to read values from old key: %w", err)
+    }
+
+    for _, name := range names {
+        valType, _, err := oldKey.GetValue(name, nil)
+        if err != nil {
+            return fmt.Errorf("failed to read value %s: %w", name, err)
+        }
+
+        switch valType {
+        case registry.SZ:
+            str, _, err := oldKey.GetStringValue(name)
+            if err != nil {
+                return fmt.Errorf("failed to get string value %s: %w", name, err)
+            }
+            if err := newKey.SetStringValue(name, str); err != nil {
+                return fmt.Errorf("failed to set string value %s: %w", name, err)
+            }
+
+        case registry.EXPAND_SZ:
+            str, _, err := oldKey.GetStringValue(name)
+            if err != nil {
+                return fmt.Errorf("failed to get expand string value %s: %w", name, err)
+            }
+            if err := newKey.SetExpandStringValue(name, str); err != nil {
+                return fmt.Errorf("failed to set expand string value %s: %w", name, err)
+            }
+
+        case registry.DWORD, registry.DWORD_BIG_ENDIAN:
+            dword, _, err := oldKey.GetIntegerValue(name)
+            if err != nil {
+                return fmt.Errorf("failed to get DWORD value %s: %w", name, err)
+            }
+            if err := newKey.SetDWordValue(name, uint32(dword)); err != nil {
+                return fmt.Errorf("failed to set DWORD value %s: %w", name, err)
+            }
+
+        case registry.QWORD:
+            qword, _, err := oldKey.GetIntegerValue(name)
+            if err != nil {
+                return fmt.Errorf("failed to get QWORD value %s: %w", name, err)
+            }
+            if err := newKey.SetQWordValue(name, qword); err != nil {
+                return fmt.Errorf("failed to set QWORD value %s: %w", name, err)
+            }
+
+        case registry.BINARY:
+            data, _, err := oldKey.GetBinaryValue(name)
+            if err != nil {
+                return fmt.Errorf("failed to get binary value %s: %w", name, err)
+            }
+            if err := newKey.SetBinaryValue(name, data); err != nil {
+                return fmt.Errorf("failed to set binary value %s: %w", name, err)
+            }
+        }
+    }
+
+    // Copy subkeys recursively
+    subkeys, err := oldKey.ReadSubKeyNames(-1)
+    if err != nil {
+        return fmt.Errorf("failed to read subkeys: %w", err)
+    }
+
+    for _, sub := range subkeys {
+        subOldPath := oldPath + "\\" + sub
+        subNewPath := newPath + "\\" + sub
+        if err := RenameRegistryKey(subOldPath, subNewPath); err != nil {
+            return fmt.Errorf("failed to copy subkey %s: %w", sub, err)
+        }
+    }
+
+    // Delete old key recursively
+    if err := deleteKeyRecursive(oldHive, oldRel); err != nil {
+        return fmt.Errorf("failed to delete old key %s: %w", oldPath, err)
+    }
+
+    return nil
+}
+
+
+func deleteKeyRecursive(hive registry.Key, path string) error {
+    k, err := registry.OpenKey(hive, path, registry.ALL_ACCESS)
+    if err != nil {
+        return err
+    }
+    defer k.Close()
+
+    subkeys, err := k.ReadSubKeyNames(-1)
+    if err == nil {
+        for _, sub := range subkeys {
+            if err := deleteKeyRecursive(hive, path+"\\"+sub); err != nil {
+                return err
+            }
+        }
+    }
+
+    return registry.DeleteKey(hive, path)
 }
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {

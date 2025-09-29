@@ -292,7 +292,36 @@ func (a *Agent) RunRPC() {
              }
 
              msg.Respond(resp)
-            }(payload)			
+            }(payload)	
+			
+		case "registry_rename_key":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+
+				oldPath, ok1 := p.Data["old_path"]
+				newPath, ok2 := p.Data["new_path"]
+				if !ok1 || !ok2 || strings.TrimSpace(oldPath) == "" || strings.TrimSpace(newPath) == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "Both old_path and new_path are required"})
+					msg.Respond(resp)
+					return
+				}
+
+				if oldPath == newPath {
+					_ = ret.Encode(map[string]interface{}{"error": "Old and new path cannot be the same"})
+					msg.Respond(resp)
+					return
+				}
+
+				err := RenameRegistryKey(oldPath, newPath)
+				if err != nil {
+					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
+				} else {
+					_ = ret.Encode(map[string]interface{}{"success": true})
+				}
+				msg.Respond(resp)
+			}(payload)
+
 
 		case "winservices":
 			go func() {
