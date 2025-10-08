@@ -224,29 +224,42 @@ func (a *Agent) RunRPC() {
 			go func(p *NatsMsg) {
 				var resp []byte
 				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+				// p.Data is map[string]string
+				path := p.Data["path"]
+				pageStr := p.Data["page"]
+				pageSizeStr := p.Data["page_size"]
+				page := 1
+				pageSize := 200
 
-				path, ok := p.Data["path"]
-				if !ok || path == "" {
-					_ = ret.Encode(map[string]interface{}{
-						"error": "Missing path",
-					})
+				if pageStr != "" {
+					if v, err := strconv.Atoi(pageStr); err == nil {
+						page = v
+					}
+				}
+				if pageSizeStr != "" {
+					if v, err := strconv.Atoi(pageSizeStr); err == nil {
+						pageSize = v
+					}
+				}
+
+				if path == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "missing path"})
 					msg.Respond(resp)
 					return
 				}
 
-				subkeys, values, err := BrowseRegistry(path)
+				subkeys, values, hasMore, err := BrowseRegistry(path, page, pageSize)
 				if err != nil {
-					_ = ret.Encode(map[string]interface{}{
-						"error": err.Error(),
-					})
+					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
 					msg.Respond(resp)
 					return
 				}
 
 				_ = ret.Encode(map[string]interface{}{
-					"path":    path,
-					"subkeys": subkeys,
-					"values":  values,
+					"path":     path,
+					"subkeys":  subkeys,
+					"values":   values,
+					"has_more": hasMore,
 				})
 				msg.Respond(resp)
 			}(payload)
@@ -323,42 +336,49 @@ func (a *Agent) RunRPC() {
 			}(payload)
 
 		case "registry_create_value":
-            go func(payload *NatsMsg) {
-                var resp []byte
-                ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+			go func(payload *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
 
-                path, ok := payload.Data["path"]
-                if !ok || strings.TrimSpace(path) == "" {
-                    _ = ret.Encode(map[string]interface{}{"error": "Missing path"})
-                    msg.Respond(resp)
-                    return
-                }
+				path, ok := payload.Data["path"]
+				if !ok || strings.TrimSpace(path) == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "Missing path"})
+					msg.Respond(resp)
+					return
+				}
 
-                valName := ""
-                if n, ok := payload.Data["name"]; ok {
-                    valName = n
-                }
+				valName := ""
+				if n, ok := payload.Data["name"]; ok {
+					valName = n
+				}
 
-                valType, ok := payload.Data["type"]
-                if !ok || strings.TrimSpace(valType) == "" {
-                    _ = ret.Encode(map[string]interface{}{"error": "Missing value type"})
-                    msg.Respond(resp)
-                    return
-                }
-                fmt.Println("RPC Handler - creating value with type:", payload.Data["type"])
+				valType, ok := payload.Data["type"]
+				if !ok || strings.TrimSpace(valType) == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "Missing value type"})
+					msg.Respond(resp)
+					return
+				}
 
-                // Call agent function to create value (creates empty placeholder)
-                createdName, err := CreateRegistryValue(path, valName, valType)
-                fmt.Println("Backend received type:", valType)
-                if err != nil {
-                    _ = ret.Encode(map[string]interface{}{"error": err.Error()})
-                    msg.Respond(resp)
-                    return
-                }
+				var valData interface{}
+				if d, ok := payload.Data["data"]; ok {
+					valData = d
+				}
 
-                _ = ret.Encode(map[string]interface{}{"status": "success", "name": createdName})
-                msg.Respond(resp)
-            }(payload)
+				created, err := CreateRegistryValue(path, valName, valType, valData)
+				if err != nil {
+					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
+					msg.Respond(resp)
+					return
+				}
+
+				_ = ret.Encode(map[string]interface{}{
+					"status": "success",
+					"name":   created["name"],
+					"type":   created["type"],
+					"data":   created["data"],
+				})
+				msg.Respond(resp)
+			}(payload)
 
 		case "registry_delete_value":
 			go func(payload *NatsMsg) {
@@ -461,7 +481,7 @@ func (a *Agent) RunRPC() {
 
 				valData := payload.Data["data"]
 
-				err := ModifyRegistryValue(path, valName, valType, valData)
+				updated, err := ModifyRegistryValue(path, valName, valType, valData)
 				if err != nil {
 					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
 					msg.Respond(resp)
@@ -470,9 +490,9 @@ func (a *Agent) RunRPC() {
 
 				_ = ret.Encode(map[string]interface{}{
 					"status": "success",
-					"name":   valName,
-					"type":   valType,
-					"data":   valData,
+					"name":   updated["name"],
+					"type":   updated["type"],
+					"data":   updated["data"],
 				})
 				msg.Respond(resp)
 			}(payload)

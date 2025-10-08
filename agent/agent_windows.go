@@ -12,6 +12,7 @@ https://license.tacticalrmm.com
 package agent
 
 import (
+	"encoding/json"
 	"encoding/hex"
 	"bytes"
 	"context"
@@ -157,6 +158,17 @@ func toByteSlice(v interface{}) ([]byte, bool) {
         return buf, true
     }
     return nil, false
+}
+
+func parseUintAuto(s string, bitSize int) (uint64, error) {
+    s = strings.TrimSpace(s)
+    if s == "" {
+        return 0, nil
+    }
+    if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+        return strconv.ParseUint(s[2:], 16, bitSize)
+    }
+    return strconv.ParseUint(s, 10, bitSize)
 }
 
 
@@ -467,141 +479,142 @@ func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	return hive, parts[1], nil
 }
 
-// Raw Windows Api 
-func BrowseRegistry(path string) ([]map[string]interface{}, []map[string]string, error) {
-    if strings.ToLower(path) == "computer" || path == "" {
-        hives := []map[string]interface{}{
-            {"name": "HKEY_CLASSES_ROOT", "hasSubkeys": true},
-            {"name": "HKEY_CURRENT_USER", "hasSubkeys": true},
-            {"name": "HKEY_LOCAL_MACHINE", "hasSubkeys": true},
-            {"name": "HKEY_USERS", "hasSubkeys": true},
-            {"name": "HKEY_CURRENT_CONFIG", "hasSubkeys": true},
-        }
-        return hives, nil, nil
-    }
+func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface{}, []map[string]interface{}, bool, error) {
+	if strings.ToLower(path) == "computer" || path == "" {
+		hives := []map[string]interface{}{
+			{"name": "HKEY_CLASSES_ROOT", "hasSubkeys": true},
+			{"name": "HKEY_CURRENT_USER", "hasSubkeys": true},
+			{"name": "HKEY_LOCAL_MACHINE", "hasSubkeys": true},
+			{"name": "HKEY_USERS", "hasSubkeys": true},
+			{"name": "HKEY_CURRENT_CONFIG", "hasSubkeys": true},
+		}
+		return hives, nil, false, nil
+	}
+	hive, relPath, err := getRegistryKeyFromPath(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
 
-    hive, relPath, err := getRegistryKeyFromPath(path)
-    if err != nil {
-        return nil, nil, err
-    }
+	k, err := registry.OpenKey(hive, relPath, registry.READ)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to open key %s: %w", path, err)
+	}
+	defer k.Close()
 
-    k, err := registry.OpenKey(hive, relPath, registry.READ)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed to open key %s: %w", path, err)
-    }
-    defer k.Close()
+	subkeys, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to read subkeys for %s: %w", path, err)
+	}
 
-    // --- Subkeys ---
-    subkeys, err := k.ReadSubKeyNames(-1)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed to read subkeys for %s: %w", path, err)
-    }
+	// --- pagination logic ---
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	hasMore := false
 
-    subkeyInfos := []map[string]interface{}{}
-    for _, sub := range subkeys {
-        hasChildren := false
-        if childKey, err := registry.OpenKey(k, sub, registry.READ); err == nil {
-            if names, _ := childKey.ReadSubKeyNames(1); len(names) > 0 {
-                hasChildren = true
-            }
-            childKey.Close()
-        }
-        subkeyInfos = append(subkeyInfos, map[string]interface{}{
-            "name":       sub,
-            "hasSubkeys": hasChildren,
-        })
-    }
+	if start >= len(subkeys) && len(subkeys) > 0 {
+		return []map[string]interface{}{}, []map[string]interface{}{}, false, nil
+	}
 
-    // --- Values (Raw WinAPI) ---
-    values := []map[string]string{}
+	if end < len(subkeys) {
+		hasMore = true
+	} else {
+		end = len(subkeys)
+	}
+	subkeyInfos := []map[string]interface{}{}
+	if len(subkeys) > 0 {
+		for _, sub := range subkeys[start:end] {
+			hasChildren := false
+			if childKey, err := registry.OpenKey(k, sub, registry.READ); err == nil {
+				if names, _ := childKey.ReadSubKeyNames(1); len(names) > 0 {
+					hasChildren = true
+				}
+				childKey.Close()
+			}
+			subkeyInfos = append(subkeyInfos, map[string]interface{}{
+				"name":       sub,
+				"hasSubkeys": hasChildren,
+			})
+		}
+	}
 
-    // Convert relPath to UTF16
-    subPath := syscall.StringToUTF16Ptr(relPath)
-    var hKey windows.Handle
-    err = windows.RegOpenKeyEx(windows.Handle(hive), subPath, 0, windows.KEY_READ, &hKey)
-    if err != nil {
-        return subkeyInfos, nil, fmt.Errorf("RegOpenKeyEx failed: %w", err)
-    }
-    defer windows.RegCloseKey(hKey)
+	// --- Values section unchanged ---
+	values := []map[string]interface{}{}
+	subPath := syscall.StringToUTF16Ptr(relPath)
+	var hKey windows.Handle
+	err = windows.RegOpenKeyEx(windows.Handle(hive), subPath, 0, windows.KEY_READ, &hKey)
+	if err != nil {
+		return subkeyInfos, nil, hasMore, fmt.Errorf("RegOpenKeyEx failed: %w", err)
+	}
+	defer windows.RegCloseKey(hKey)
 
-    var index uint32 = 0
-    for {
-        var valueName [256]uint16
-        valueNameLen := uint32(len(valueName))
-        var valType uint32
-        var data [1024]byte
-        dataLen := uint32(len(data))
+	var index uint32 = 0
+	for {
+		var valueName [256]uint16
+		valueNameLen := uint32(len(valueName))
+		var valType uint32
+		var data [1024]byte
+		dataLen := uint32(len(data))
 
-        err := regEnumValue(hKey, index, &valueName[0], &valueNameLen, &valType, (*byte)(unsafe.Pointer(&data[0])), &dataLen)
+		err := regEnumValue(hKey, index, &valueName[0], &valueNameLen, &valType, (*byte)(unsafe.Pointer(&data[0])), &dataLen)
+		if err == windows.ERROR_NO_MORE_ITEMS {
+			break
+		}
+		if err != nil {
+			return subkeyInfos, values, hasMore, fmt.Errorf("RegEnumValue failed: %w", err)
+		}
 
-
-        if err == windows.ERROR_NO_MORE_ITEMS {
-            break
-        }
-        if err != nil {
-            return subkeyInfos, values, fmt.Errorf("RegEnumValue failed: %w", err)
-        }
-
-        name := syscall.UTF16ToString(valueName[:valueNameLen])
-        entry := map[string]string{"name": name}
-
-        switch valType {
-        case windows.REG_SZ:
-            str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
-            entry["type"] = "REG_SZ"
-            entry["data"] = str
-
-        case windows.REG_EXPAND_SZ:
-            str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
-            entry["type"] = "REG_EXPAND_SZ"
-            entry["data"] = str
-
-        case windows.REG_MULTI_SZ:
-            utf16s := (*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2]
-            parts := []string{}
-            start := 0
-            for i, c := range utf16s {
-                if c == 0 {
-                    if start < i {
-                        parts = append(parts, syscall.UTF16ToString(utf16s[start:i]))
-                    }
-                    start = i + 1
-                }
-            }
-            entry["type"] = "REG_MULTI_SZ"
-            entry["data"] = strings.Join(parts, "; ")
-
-        case windows.REG_DWORD:
-            val := *(*uint32)(unsafe.Pointer(&data[0]))
-            entry["type"] = "REG_DWORD"
-            entry["data"] = fmt.Sprintf("0x%08X (%d)", val, val)
-
-        case windows.REG_QWORD:
-            val := *(*uint64)(unsafe.Pointer(&data[0]))
-            entry["type"] = "REG_QWORD"
-            entry["data"] = fmt.Sprintf("0x%X (%d)", val, val)
-
-        case windows.REG_BINARY:
-            // entry["type"] = "REG_BINARY"
-            // entry["data"] = fmt.Sprintf("hex:%x", data[:dataLen])
+		name := syscall.UTF16ToString(valueName[:valueNameLen])
+		entry := map[string]interface{}{"name": name}
+		switch valType {
+		case windows.REG_SZ:
+			str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
+			entry["type"] = "REG_SZ"
+			entry["data"] = str
+		case windows.REG_EXPAND_SZ:
+			str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
+			entry["type"] = "REG_EXPAND_SZ"
+			entry["data"] = str
+		case windows.REG_MULTI_SZ:
+			utf16s := (*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2]
+			parts := []string{}
+			start := 0
+			for i, c := range utf16s {
+				if c == 0 {
+					if start < i {
+						parts = append(parts, syscall.UTF16ToString(utf16s[start:i]))
+					}
+					start = i + 1
+				}
+			}
+			entry["type"] = "REG_MULTI_SZ"
+			entry["data"] = parts
+		case windows.REG_DWORD:
+			val := *(*uint32)(unsafe.Pointer(&data[0]))
+			entry["type"] = "REG_DWORD"
+			entry["data"] = fmt.Sprintf("0x%08X (%d)", val, val)
+		case windows.REG_QWORD:
+			val := *(*uint64)(unsafe.Pointer(&data[0]))
+			entry["type"] = "REG_QWORD"
+			entry["data"] = fmt.Sprintf("0x%X (%d)", val, val)
+		case windows.REG_BINARY:
 			hexBytes := make([]string, dataLen)
-            for i := 0; i < int(dataLen); i++ {
-                hexBytes[i] = fmt.Sprintf("%02X", data[i])
-            }
-            entry["type"] = "REG_BINARY"
-            entry["data"] = strings.Join(hexBytes, " ")
+			for i := 0; i < int(dataLen); i++ {
+				hexBytes[i] = fmt.Sprintf("%02X", data[i])
+			}
+			entry["type"] = "REG_BINARY"
+			entry["data"] = strings.Join(hexBytes, " ")
+		default:
+			entry["type"] = fmt.Sprintf("UNKNOWN_%d", valType)
+			entry["data"] = "<unsupported>"
+		}
 
-        default:
-            entry["type"] = fmt.Sprintf("UNKNOWN_%d", valType)
-            entry["data"] = "<unsupported>"
-        }
+		values = append(values, entry)
+		index++
+	}
 
-        values = append(values, entry)
-        index++
-    }
-
-    return subkeyInfos, values, nil
+	return subkeyInfos, values, hasMore, nil
 }
+
 
 func CreateRegistryKey(path string) error {
 	hive, relPath, err := getRegistryKeyFromPath(path)
@@ -803,63 +816,142 @@ func deleteKeyRecursive(hive registry.Key, path string) error {
     return registry.DeleteKey(hive, path)
 }
 
-func CreateRegistryValue(path string, name string, valType string) (string, error) {
-    hive, relPath, err := getRegistryKeyFromPath(path)
-    if err != nil {
-        return "", fmt.Errorf("parsing registry path: %w", err)
-    }
+func CreateRegistryValue(path string, name string, valType string, data interface{}) (map[string]interface{}, error) {
+	hive, relPath, err := getRegistryKeyFromPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("parsing registry path: %w", err)
+	}
 
-    // open key with sufficient rights
-    k, err := registry.OpenKey(hive, relPath, registry.ALL_ACCESS)
-    if err != nil {
-        return "", fmt.Errorf("failed to open key for writing '%s': %w", path, err)
-    }
-    defer k.Close()
+	k, err := registry.OpenKey(hive, relPath, registry.ALL_ACCESS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open key for writing '%s': %w", path, err)
+	}
+	defer k.Close()
 
-    // validate name
-    name = strings.TrimSpace(name)
-    if name == "" {
-        return "", fmt.Errorf("registry value name is required")
-    }
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("registry value name is required")
+	}
 
-    // check if value already exists
-    if _, _, err := k.GetValue(name, nil); err == nil {
-        return "", fmt.Errorf("value '%s' already exists under %s", name, path)
-    }
+	// Check if value already exists
+	if _, _, err := k.GetValue(name, nil); err == nil {
+		return nil, fmt.Errorf("registry value '%s' already exists under '%s'", name, path)
+	}
 
-    // Create empty placeholder depending on type
-    t := strings.ToUpper(strings.TrimSpace(valType))
-    switch t {
-    case "REG_SZ":
-        if err := k.SetStringValue(name, ""); err != nil {
-            return "", fmt.Errorf("failed to create REG_SZ value '%s': %w", name, err)
-        }
-    case "REG_EXPAND_SZ":
-        if err := k.SetExpandStringValue(name, ""); err != nil {
-            return "", fmt.Errorf("failed to create REG_EXPAND_SZ value '%s': %w", name, err)
-        }
-    case "REG_MULTI_SZ":
-        if err := k.SetStringsValue(name, []string{}); err != nil {
-            return "", fmt.Errorf("failed to create REG_MULTI_SZ value '%s': %w", name, err)
-        }
-    case "REG_DWORD":
-        if err := k.SetDWordValue(name, 0); err != nil {
-            return "", fmt.Errorf("failed to create REG_DWORD value '%s': %w", name, err)
-        }
-    case "REG_QWORD":
-        if err := k.SetQWordValue(name, 0); err != nil {
-            return "", fmt.Errorf("failed to create REG_QWORD value '%s': %w", name, err)
-        }
-    case "REG_BINARY":
-        if err := k.SetBinaryValue(name, []byte{}); err != nil {
-            return "", fmt.Errorf("failed to create REG_BINARY value '%s': %w", name, err)
-        }
-    default:
-        return "", fmt.Errorf("unsupported registry value type: %s", valType)
-    }
+	var displayData interface{}
+	t := strings.ToUpper(strings.TrimSpace(valType))
 
-    return name, nil
+	switch t {
+	case "REG_SZ":
+		strVal := ""
+		if s, ok := data.(string); ok && s != "" {
+			strVal = s
+		}
+		err = k.SetStringValue(name, strVal)
+		displayData = strVal
+
+	case "REG_EXPAND_SZ":
+		strVal := ""
+		if s, ok := data.(string); ok && s != "" {
+			strVal = s
+		}
+		err = k.SetExpandStringValue(name, strVal)
+		displayData = strVal
+
+	case "REG_MULTI_SZ":
+		var strs []string
+		if data == nil {
+			strs = []string{}
+		} else {
+			switch v := data.(type) {
+			case []string:
+				strs = v
+			case []interface{}:
+				for _, item := range v {
+					strs = append(strs, fmt.Sprintf("%v", item))
+				}
+			case string:
+				// Try to parse JSON array string
+				var arr []string
+				if uErr := json.Unmarshal([]byte(v), &arr); uErr == nil {
+					strs = arr
+				} else if strings.Contains(v, ",") {
+					strs = strings.Split(v, ",")
+				} else {
+					strs = []string{v}
+				}
+			default:
+				return nil, fmt.Errorf("expected []string or JSON array for REG_MULTI_SZ, got %T", data)
+			}
+		}
+		err = k.SetStringsValue(name, strs)
+		displayData = strs
+
+	case "REG_DWORD":
+		var dword uint32
+		if data != nil && data != "" {
+			switch v := data.(type) {
+			case string:
+				parsed, perr := parseUintAuto(v, 32)
+				if perr != nil {
+					return nil, fmt.Errorf("invalid REG_DWORD value '%s': must be decimal or hex", v)
+				}
+				dword = uint32(parsed)
+			default:
+				if num, ok := toUint32(v); ok {
+					dword = num
+				}
+			}
+		}
+		err = k.SetDWordValue(name, dword)
+		displayData = fmt.Sprintf("0x%X (%d)", dword, dword)
+
+	case "REG_QWORD":
+		var qword uint64
+		if data != nil && data != "" {
+			switch v := data.(type) {
+			case string:
+				parsed, perr := parseUintAuto(v, 64)
+				if perr != nil {
+					return nil, fmt.Errorf("invalid REG_QWORD value '%s': must be decimal or hex", v)
+				}
+				qword = parsed
+			default:
+				if num, ok := toUint64(v); ok {
+					qword = num
+				}
+			}
+		}
+		err = k.SetQWordValue(name, qword)
+		displayData = fmt.Sprintf("0x%X (%d)", qword, qword)
+
+	case "REG_BINARY":
+		bin := []byte{}
+		if data != nil && data != "" {
+			if b, ok := toByteSlice(data); ok {
+				bin = b
+			}
+		}
+		err = k.SetBinaryValue(name, bin)
+		displayData = fmt.Sprintf("% X", bin)
+
+	default:
+		return nil, fmt.Errorf("unsupported registry value type: %s", valType)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s value '%s': %w", valType, name, err)
+	}
+
+	result := map[string]interface{}{
+		"name": name,
+		"type": t,
+		"data": displayData,
+	}
+
+	return result, nil
 }
+
 
 func DeleteRegistryValue(path string, name string) error {
     hive, relPath, err := getRegistryKeyFromPath(path)
@@ -986,73 +1078,140 @@ func RenameRegistryValue(path, oldName, newName string) (string, error) {
     return newName, nil
 }
 
-func ModifyRegistryValue(path string, name string, valType string, data interface{}) error {
-    hive, relPath, err := getRegistryKeyFromPath(path)
-    if err != nil {
-        return fmt.Errorf("parsing registry path: %w", err)
-    }
+func ModifyRegistryValue(path string, name string, valType string, data interface{}) (map[string]interface{}, error) {
+	hive, relPath, err := getRegistryKeyFromPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("parsing registry path: %w", err)
+	}
 
-    k, err := registry.OpenKey(hive, relPath, registry.SET_VALUE)
-    if err != nil {
-        return fmt.Errorf("failed to open key for writing '%s': %w", path, err)
-    }
-    defer k.Close()
+	k, err := registry.OpenKey(hive, relPath, registry.SET_VALUE)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open key for writing '%s': %w", path, err)
+	}
+	defer k.Close()
 
-    name = strings.TrimSpace(name)
-    if name == "" {
-        return fmt.Errorf("registry value name is required")
-    }
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("registry value name is required")
+	}
 
-    t := strings.ToUpper(strings.TrimSpace(valType))
-    switch t {
-    case "REG_SZ", "REG_EXPAND_SZ":
-        strVal, ok := data.(string)
-        if !ok {
-            return fmt.Errorf("expected string for %s, got %T", t, data)
-        }
-        return k.SetStringValue(name, strVal)
+	t := strings.ToUpper(strings.TrimSpace(valType))
+	var displayData interface{}
 
-    case "REG_MULTI_SZ":
-        // msgpack may decode as []interface{}
-        switch v := data.(type) {
-        case []string:
-            return k.SetStringsValue(name, v)
-        case []interface{}:
-            strs := make([]string, len(v))
-            for i, item := range v {
-                strs[i] = fmt.Sprintf("%v", item)
-            }
-            return k.SetStringsValue(name, strs)
-        default:
-            return fmt.Errorf("expected []string for REG_MULTI_SZ, got %T", data)
-        }
+	switch t {
 
-    case "REG_DWORD":
-        dword, ok := toUint32(data)
-        if !ok {
-            return fmt.Errorf("expected uint32 for REG_DWORD, got %T", data)
-        }
-        return k.SetDWordValue(name, dword)
+	case "REG_SZ":
+		strVal := ""
+		if s, ok := data.(string); ok && s != "" {
+			strVal = s
+		}
+		err = k.SetStringValue(name, strVal)
+		displayData = strVal
 
-    case "REG_QWORD":
-        qword, ok := toUint64(data)
-        if !ok {
-            return fmt.Errorf("expected uint64 for REG_QWORD, got %T", data)
-        }
-        return k.SetQWordValue(name, qword)
+	case "REG_EXPAND_SZ":
+		strVal := ""
+		if s, ok := data.(string); ok && s != "" {
+			strVal = s
+		}
+		err = k.SetExpandStringValue(name, strVal)
+		displayData = strVal
 
-    case "REG_BINARY":
-        bin, ok := toByteSlice(data)
-        if !ok {
-            return fmt.Errorf("expected []byte or hex string for REG_BINARY, got %T", data)
-        }
-        return k.SetBinaryValue(name, bin)
+	case "REG_MULTI_SZ":
+		var strs []string
+		if data == nil {
+			strs = []string{}
+		} else {
+			switch v := data.(type) {
+			case []string:
+				strs = v
+			case []interface{}:
+				for _, item := range v {
+					strs = append(strs, fmt.Sprintf("%v", item))
+				}
+			case string:
+				var arr []string
+				if uErr := json.Unmarshal([]byte(v), &arr); uErr == nil {
+					strs = arr
+				} else if strings.Contains(v, ",") {
+					strs = strings.Split(v, ",")
+				} else {
+					strs = []string{v}
+				}
+			default:
+				return nil, fmt.Errorf("expected []string or JSON array for REG_MULTI_SZ, got %T", data)
+			}
+		}
+		err = k.SetStringsValue(name, strs)
+		displayData = strs
 
-    default:
-        return fmt.Errorf("unsupported registry value type: %s", valType)
-    }
+	case "REG_DWORD":
+		var dword uint32
+		if data != nil && data != "" {
+			switch v := data.(type) {
+			case string:
+				parsed, perr := parseUintAuto(v, 32)
+				if perr != nil {
+					return nil, fmt.Errorf("invalid REG_DWORD value '%s': must be decimal or hex", v)
+				}
+				dword = uint32(parsed)
+			default:
+				if num, ok := toUint32(v); ok {
+					dword = num
+				} else {
+					return nil, fmt.Errorf("expected numeric value for REG_DWORD, got %T", v)
+				}
+			}
+		}
+		err = k.SetDWordValue(name, dword)
+		displayData = fmt.Sprintf("0x%X (%d)", dword, dword)
+
+	case "REG_QWORD":
+		var qword uint64
+		if data != nil && data != "" {
+			switch v := data.(type) {
+			case string:
+				parsed, perr := parseUintAuto(v, 64)
+				if perr != nil {
+					return nil, fmt.Errorf("invalid REG_QWORD value '%s': must be decimal or hex", v)
+				}
+				qword = parsed
+			default:
+				if num, ok := toUint64(v); ok {
+					qword = num
+				} else {
+					return nil, fmt.Errorf("expected numeric value for REG_QWORD, got %T", v)
+				}
+			}
+		}
+		err = k.SetQWordValue(name, qword)
+		displayData = fmt.Sprintf("0x%X (%d)", qword, qword)
+
+	case "REG_BINARY":
+		bin := []byte{}
+		if data != nil && data != "" {
+			if b, ok := toByteSlice(data); ok {
+				bin = b
+			}
+		}
+		err = k.SetBinaryValue(name, bin)
+		displayData = fmt.Sprintf("% X", bin)
+
+	default:
+		return nil, fmt.Errorf("unsupported registry value type: %s", valType)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to modify %s value '%s': %w", valType, name, err)
+	}
+
+	result := map[string]interface{}{
+		"name": name,
+		"type": t,
+		"data": displayData,
+	}
+
+	return result, nil
 }
-
 
 func CMDShell(shell string, cmdArgs []string, command string, timeout int, detached bool, runasuser bool) (output [2]string, e error) {
 	var (
