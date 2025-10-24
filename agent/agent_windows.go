@@ -457,7 +457,7 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	parts := strings.SplitN(path, "\\", 2)
 	if len(parts) != 2 {
-		return 0, "", errors.New("invalid registry path")
+		return 0, "", errors.New("Invalid registry path, Please enter a valid path")
 	}
 
 	var hive registry.Key
