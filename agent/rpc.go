@@ -16,10 +16,10 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"strings"
 
 	rmm "github.com/amidaware/rmmagent/shared"
 	nats "github.com/nats-io/nats.go"
@@ -264,49 +264,49 @@ func (a *Agent) RunRPC() {
 				msg.Respond(resp)
 			}(payload)
 
-        case "registry_create_key":
-            go func(p *NatsMsg) {
-                var resp []byte
-                ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+		case "registry_create_key":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
 
-                path, ok := p.Data["path"]
-                if !ok || strings.TrimSpace(path) == "" {
-                    _ = ret.Encode(map[string]interface{}{"error": "Missing or empty path"})
-                    msg.Respond(resp)
-                    return
-                }
+				path, ok := p.Data["path"]
+				if !ok || strings.TrimSpace(path) == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "Missing or empty path"})
+					msg.Respond(resp)
+					return
+				}
 
-                err := CreateRegistryKey(path)
-                if err != nil {
-                    _ = ret.Encode(map[string]interface{}{"error": err.Error()})
-                } else {
-                    _ = ret.Encode(map[string]interface{}{"success": true})
-                }
-                msg.Respond(resp)
-            }(payload)
+				err := CreateRegistryKey(path)
+				if err != nil {
+					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
+				} else {
+					_ = ret.Encode(map[string]interface{}{"success": true})
+				}
+				msg.Respond(resp)
+			}(payload)
 
-        case "registry_delete_key":
-            go func(p *NatsMsg) {
-             var resp []byte
-             ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+		case "registry_delete_key":
+			go func(p *NatsMsg) {
+				var resp []byte
+				ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
 
-             path, ok := p.Data["path"]
-             if !ok || strings.TrimSpace(path) == "" {
-                 _ = ret.Encode(map[string]interface{}{"error": "Missing or empty path"})
-                 msg.Respond(resp)
-                 return
-             }
+				path, ok := p.Data["path"]
+				if !ok || strings.TrimSpace(path) == "" {
+					_ = ret.Encode(map[string]interface{}{"error": "Missing or empty path"})
+					msg.Respond(resp)
+					return
+				}
 
-             err := DeleteRegistryKey(path)
-             if err != nil {
-                 _ = ret.Encode(map[string]interface{}{"error": err.Error()})
-             } else {
-                 _ = ret.Encode(map[string]interface{}{"success": true})
-             }
+				err := DeleteRegistryKey(path)
+				if err != nil {
+					_ = ret.Encode(map[string]interface{}{"error": err.Error()})
+				} else {
+					_ = ret.Encode(map[string]interface{}{"success": true})
+				}
 
-             msg.Respond(resp)
-            }(payload)	
-			
+				msg.Respond(resp)
+			}(payload)
+
 		case "registry_rename_key":
 			go func(p *NatsMsg) {
 				var resp []byte
