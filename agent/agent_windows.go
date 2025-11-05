@@ -687,23 +687,24 @@ func DeleteRegistryKey(path string) error {
 }
 
 func RenameRegistryKey(oldPath, newPath string) error {
-	// Open old key
+	oldPath = strings.TrimSuffix(oldPath, "\\")
+	newPath = strings.TrimSuffix(newPath, "\\")
+
 	oldHive, oldRel, err := getRegistryKeyFromPath(oldPath)
 	if err != nil {
 		return fmt.Errorf("invalid old path: %w", err)
 	}
 
-	oldKey, err := registry.OpenKey(oldHive, oldRel, registry.READ)
-	if err != nil {
-		return fmt.Errorf("failed to open old key: %w", err)
-	}
-	defer oldKey.Close()
-
-	// Create new key
 	newHive, newRel, err := getRegistryKeyFromPath(newPath)
 	if err != nil {
 		return fmt.Errorf("invalid new path: %w", err)
 	}
+
+	oldKey, err := registry.OpenKey(oldHive, oldRel, registry.READ|registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return fmt.Errorf("failed to open old key path: %w", err)
+	}
+	defer oldKey.Close()
 
 	newKey, _, err := registry.CreateKey(newHive, newRel, registry.ALL_ACCESS)
 	if err != nil {
@@ -714,59 +715,58 @@ func RenameRegistryKey(oldPath, newPath string) error {
 	// Copy values
 	names, err := oldKey.ReadValueNames(-1)
 	if err != nil {
-		return fmt.Errorf("failed to read values from old key: %w", err)
+		return fmt.Errorf("failed to read values: %w", err)
 	}
 
 	for _, name := range names {
-		valType, _, err := oldKey.GetValue(name, nil)
-		if err != nil {
-			return fmt.Errorf("failed to read value %s: %w", name, err)
+		var copied bool
+
+		// (REG_SZ / REG_EXPAND_SZ)
+		if s, _, err := oldKey.GetStringValue(name); err == nil {
+			if err := newKey.SetExpandStringValue(name, s); err == nil {
+				copied = true
+				continue
+			}
 		}
 
-		switch valType {
-		case registry.SZ:
-			str, _, err := oldKey.GetStringValue(name)
-			if err != nil {
-				return fmt.Errorf("failed to get string value %s: %w", name, err)
+		// (REG_MULTI_SZ)
+		if !copied {
+			if strs, _, err := oldKey.GetStringsValue(name); err == nil {
+				if err := newKey.SetStringsValue(name, strs); err == nil {
+					copied = true
+					continue
+				}
 			}
-			if err := newKey.SetStringValue(name, str); err != nil {
-				return fmt.Errorf("failed to set string value %s: %w", name, err)
-			}
+		}
 
-		case registry.EXPAND_SZ:
-			str, _, err := oldKey.GetStringValue(name)
-			if err != nil {
-				return fmt.Errorf("failed to get expand string value %s: %w", name, err)
+		// (REG_DWORD / REG_QWORD)
+		if !copied {
+			if i, _, err := oldKey.GetIntegerValue(name); err == nil {
+				if i <= 0xFFFFFFFF {
+					_ = newKey.SetDWordValue(name, uint32(i))
+				} else {
+					_ = newKey.SetQWordValue(name, i)
+				}
+				copied = true
+				continue
 			}
-			if err := newKey.SetExpandStringValue(name, str); err != nil {
-				return fmt.Errorf("failed to set expand string value %s: %w", name, err)
-			}
+		}
 
-		case registry.DWORD, registry.DWORD_BIG_ENDIAN:
-			dword, _, err := oldKey.GetIntegerValue(name)
-			if err != nil {
-				return fmt.Errorf("failed to get DWORD value %s: %w", name, err)
+		// (REG_BINARY or fallback)
+		if !copied {
+			if b, _, err := oldKey.GetBinaryValue(name); err == nil {
+				_ = newKey.SetBinaryValue(name, b)
+				copied = true
+				continue
 			}
-			if err := newKey.SetDWordValue(name, uint32(dword)); err != nil {
-				return fmt.Errorf("failed to set DWORD value %s: %w", name, err)
-			}
+		}
 
-		case registry.QWORD:
-			qword, _, err := oldKey.GetIntegerValue(name)
-			if err != nil {
-				return fmt.Errorf("failed to get QWORD value %s: %w", name, err)
-			}
-			if err := newKey.SetQWordValue(name, qword); err != nil {
-				return fmt.Errorf("failed to set QWORD value %s: %w", name, err)
-			}
-
-		case registry.BINARY:
-			data, _, err := oldKey.GetBinaryValue(name)
-			if err != nil {
-				return fmt.Errorf("failed to get binary value %s: %w", name, err)
-			}
-			if err := newKey.SetBinaryValue(name, data); err != nil {
-				return fmt.Errorf("failed to set binary value %s: %w", name, err)
+		// Log unknown type
+		if !copied {
+			if valType, _, err := oldKey.GetValue(name, nil); err == nil {
+				fmt.Printf("[WARN] Unknown value type %d for: %s\n", valType, name)
+			} else {
+				fmt.Printf("[WARN] Skipped value: %s (unreadable type)\n", name)
 			}
 		}
 	}
@@ -778,16 +778,16 @@ func RenameRegistryKey(oldPath, newPath string) error {
 	}
 
 	for _, sub := range subkeys {
-		subOldPath := oldPath + "\\" + sub
-		subNewPath := newPath + "\\" + sub
-		if err := RenameRegistryKey(subOldPath, subNewPath); err != nil {
+		subOld := oldPath + "\\" + sub
+		subNew := newPath + "\\" + sub
+		if err := RenameRegistryKey(subOld, subNew); err != nil {
 			return fmt.Errorf("failed to copy subkey %s: %w", sub, err)
 		}
 	}
 
 	// Delete old key recursively
 	if err := deleteKeyRecursive(oldHive, oldRel); err != nil {
-		return fmt.Errorf("failed to delete old key %s: %w", oldPath, err)
+		return fmt.Errorf("failed to delete old key: %w", err)
 	}
 
 	return nil
