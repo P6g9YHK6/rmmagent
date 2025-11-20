@@ -775,53 +775,82 @@ func copyRegistryValues(oldKey, newKey registry.Key) error {
 	for _, name := range names {
 		var copied bool
 
-		// (REG_SZ / REG_EXPAND_SZ)
-		if s, _, err := oldKey.GetStringValue(name); err == nil {
-			if err := newKey.SetExpandStringValue(name, s); err == nil {
+		// string-like values (REG_SZ / REG_EXPAND_SZ)
+		if s, valType, err := oldKey.GetStringValue(name); err == nil {
+			switch valType {
+			case registry.SZ:
+				err = newKey.SetStringValue(name, s)
+			case registry.EXPAND_SZ:
+				err = newKey.SetExpandStringValue(name, s)
+			default:
+				// Some hives might report odd types; best-effort fallback
+				fmt.Printf("[WARN] GetStringValue returned unexpected type %d for %s, writing as REG_SZ\n", valType, name)
+				err = newKey.SetStringValue(name, s)
+			}
+
+			if err != nil {
+				return fmt.Errorf("failed copying string value %s: %w", name, err)
+			}
+
+			copied = true
+			continue
+		}
+
+		// MULTI_SZ
+		if !copied {
+			if strs, valType, err := oldKey.GetStringsValue(name); err == nil {
+				// valType for MULTI_SZ should be registry.MULTI_SZ
+				if valType != registry.MULTI_SZ {
+					fmt.Printf("[WARN] GetStringsValue returned unexpected type %d for %s\n", valType, name)
+				}
+
+				err = newKey.SetStringsValue(name, strs)
+				if err != nil {
+					return fmt.Errorf("failed copying multi-string value %s: %w", name, err)
+				}
+
 				copied = true
 				continue
 			}
 		}
 
-		// (REG_MULTI_SZ)
+		// integer values (REG_DWORD / REG_QWORD)
 		if !copied {
-			if strs, _, err := oldKey.GetStringsValue(name); err == nil {
-				if err := newKey.SetStringsValue(name, strs); err == nil {
-					copied = true
-					continue
+			if i, valType, err := oldKey.GetIntegerValue(name); err == nil {
+				switch valType {
+				case registry.DWORD:
+					err = newKey.SetDWordValue(name, uint32(i))
+				case registry.QWORD:
+					err = newKey.SetQWordValue(name, i)
+				default:
+					fmt.Printf("[WARN] GetIntegerValue returned unexpected type %d for %s, writing as DWORD\n", valType, name)
+					err = newKey.SetDWordValue(name, uint32(i))
 				}
-			}
-		}
 
-		// (REG_DWORD / REG_QWORD)
-		if !copied {
-			if i, _, err := oldKey.GetIntegerValue(name); err == nil {
-				if i <= 0xFFFFFFFF {
-					_ = newKey.SetDWordValue(name, uint32(i))
-				} else {
-					_ = newKey.SetQWordValue(name, i)
+				if err != nil {
+					return fmt.Errorf("failed copying integer value %s: %w", name, err)
 				}
+
 				copied = true
 				continue
 			}
 		}
 
-		// (REG_BINARY or fallback)
+		// binary values (REG_BINARY / REG_NONE-ish stuff)
 		if !copied {
 			if b, _, err := oldKey.GetBinaryValue(name); err == nil {
-				_ = newKey.SetBinaryValue(name, b)
+				err = newKey.SetBinaryValue(name, b)
+				if err != nil {
+					return fmt.Errorf("failed copying binary value %s: %w", name, err)
+				}
+
 				copied = true
 				continue
 			}
 		}
 
-		// Log unknown type
 		if !copied {
-			if valType, _, err := oldKey.GetValue(name, nil); err == nil {
-				fmt.Printf("[WARN] Unknown value type %d for: %s\n", valType, name)
-			} else {
-				fmt.Printf("[WARN] Skipped value: %s (unreadable type)\n", name)
-			}
+			fmt.Printf("[WARN] Could not copy value '%s' (no getter succeeded)\n", name)
 		}
 	}
 	return nil
