@@ -726,8 +726,8 @@ func DeleteRegistryKey(path string) error {
 }
 
 func RenameRegistryKey(oldPath, newPath string) error {
-	oldPath = strings.TrimSuffix(oldPath, "\\")
-	newPath = strings.TrimSuffix(newPath, "\\")
+	oldPath = strings.TrimRight(oldPath, `\`)
+	newPath = strings.TrimRight(newPath, `\`)
 
 	oldHive, oldRel, err := getRegistryKeyFromPath(oldPath)
 	if err != nil {
@@ -751,7 +751,22 @@ func RenameRegistryKey(oldPath, newPath string) error {
 	}
 	defer newKey.Close()
 
-	// Copy values
+	if err := copyRegistryValues(oldKey, newKey); err != nil {
+		return err
+	}
+
+	if err := copyRegistrySubkeys(oldPath, newPath); err != nil {
+		return err
+	}
+
+	if err := deleteKeyRecursive(oldHive, oldRel); err != nil {
+		return fmt.Errorf("failed to delete old key: %w", err)
+	}
+
+	return nil
+}
+
+func copyRegistryValues(oldKey, newKey registry.Key) error {
 	names, err := oldKey.ReadValueNames(-1)
 	if err != nil {
 		return fmt.Errorf("failed to read values: %w", err)
@@ -809,26 +824,33 @@ func RenameRegistryKey(oldPath, newPath string) error {
 			}
 		}
 	}
+	return nil
+}
 
-	// Copy subkeys recursively
-	subkeys, err := oldKey.ReadSubKeyNames(-1)
+func copyRegistrySubkeys(oldPath, newPath string) error {
+	subHive, subRel, err := getRegistryKeyFromPath(oldPath)
+	if err != nil {
+		return fmt.Errorf("invalid old path: %w", err)
+	}
+
+	k, err := registry.OpenKey(subHive, subRel, registry.READ)
+	if err != nil {
+		return fmt.Errorf("failed to open key: %w", err)
+	}
+	defer k.Close()
+
+	subkeys, err := k.ReadSubKeyNames(-1)
 	if err != nil {
 		return fmt.Errorf("failed to read subkeys: %w", err)
 	}
 
 	for _, sub := range subkeys {
-		subOld := oldPath + "\\" + sub
-		subNew := newPath + "\\" + sub
+		subOld := oldPath + `\` + sub
+		subNew := newPath + `\` + sub
 		if err := RenameRegistryKey(subOld, subNew); err != nil {
 			return fmt.Errorf("failed to copy subkey %s: %w", sub, err)
 		}
 	}
-
-	// Delete old key recursively
-	if err := deleteKeyRecursive(oldHive, oldRel); err != nil {
-		return fmt.Errorf("failed to delete old key: %w", err)
-	}
-
 	return nil
 }
 
