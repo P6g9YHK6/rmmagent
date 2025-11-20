@@ -452,6 +452,21 @@ func CMD(exe string, args []string, timeout int, detached bool) (output [2]strin
 	return [2]string{CleanString(outb.String()), CleanString(errb.String())}, nil
 }
 
+const (
+	HKLM = "HKEY_LOCAL_MACHINE"
+	HKCU = "HKEY_CURRENT_USER"
+	HKCR = "HKEY_CLASSES_ROOT"
+	HKU  = "HKEY_USERS"
+	HKCC = "HKEY_CURRENT_CONFIG"
+
+	RegTypeSZ       = "REG_SZ"
+	RegTypeExpandSZ = "REG_EXPAND_SZ"
+	RegTypeMultiSZ  = "REG_MULTI_SZ"
+	RegTypeDWORD    = "REG_DWORD"
+	RegTypeQWORD    = "REG_QWORD"
+	RegTypeBinary   = "REG_BINARY"
+)
+
 // Parse "HKEY_LOCAL_MACHINE\\SOFTWARE" → registry hive + relative path
 func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	parts := strings.SplitN(path, "\\", 2)
@@ -461,15 +476,15 @@ func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 
 	var hive registry.Key
 	switch parts[0] {
-	case "HKEY_LOCAL_MACHINE":
+	case HKLM:
 		hive = registry.LOCAL_MACHINE
-	case "HKEY_CURRENT_USER":
+	case HKCU:
 		hive = registry.CURRENT_USER
-	case "HKEY_CLASSES_ROOT":
+	case HKCR:
 		hive = registry.CLASSES_ROOT
-	case "HKEY_USERS":
+	case HKU:
 		hive = registry.USERS
-	case "HKEY_CURRENT_CONFIG":
+	case HKCC:
 		hive = registry.CURRENT_CONFIG
 	default:
 		return 0, "", errors.New("unknown registry hive")
@@ -478,17 +493,32 @@ func getRegistryKeyFromPath(path string) (registry.Key, string, error) {
 	return hive, parts[1], nil
 }
 
-func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface{}, []map[string]interface{}, bool, error) {
-	if strings.ToLower(path) == "computer" || path == "" {
-		hives := []map[string]interface{}{
-			{"name": "HKEY_CLASSES_ROOT", "hasSubkeys": true},
-			{"name": "HKEY_CURRENT_USER", "hasSubkeys": true},
-			{"name": "HKEY_LOCAL_MACHINE", "hasSubkeys": true},
-			{"name": "HKEY_USERS", "hasSubkeys": true},
-			{"name": "HKEY_CURRENT_CONFIG", "hasSubkeys": true},
-		}
-		return hives, nil, false, nil
+type RegistryNode struct {
+	Name       string `json:"name"`
+	HasSubkeys bool   `json:"hasSubkeys"`
+}
+
+type RegistryValue struct {
+	Name string      `json:"name"`
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
+}
+
+func listTopLevelHives() []RegistryNode {
+	return []RegistryNode{
+		{Name: HKCR, HasSubkeys: true},
+		{Name: HKCU, HasSubkeys: true},
+		{Name: HKLM, HasSubkeys: true},
+		{Name: HKU, HasSubkeys: true},
+		{Name: HKCC, HasSubkeys: true},
 	}
+}
+
+func BrowseRegistry(path string, page, pageSize int) ([]RegistryNode, []RegistryValue, bool, error) {
+	if strings.ToLower(path) == "computer" || path == "" {
+		return listTopLevelHives(), nil, false, nil
+	}
+
 	hive, relPath, err := getRegistryKeyFromPath(path)
 	if err != nil {
 		return nil, nil, false, err
@@ -505,47 +535,48 @@ func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface
 		return nil, nil, false, fmt.Errorf("failed to read subkeys for %s: %w", path, err)
 	}
 
-	// --- pagination logic ---
 	start := (page - 1) * pageSize
 	end := start + pageSize
-	hasMore := false
-
-	if start >= len(subkeys) && len(subkeys) > 0 {
-		return []map[string]interface{}{}, []map[string]interface{}{}, false, nil
-	}
-
-	if end < len(subkeys) {
-		hasMore = true
-	} else {
+	if end > len(subkeys) {
 		end = len(subkeys)
 	}
-	subkeyInfos := []map[string]interface{}{}
-	if len(subkeys) > 0 {
-		for _, sub := range subkeys[start:end] {
-			hasChildren := false
-			if childKey, err := registry.OpenKey(k, sub, registry.READ); err == nil {
-				if names, _ := childKey.ReadSubKeyNames(1); len(names) > 0 {
-					hasChildren = true
-				}
-				childKey.Close()
-			}
-			subkeyInfos = append(subkeyInfos, map[string]interface{}{
-				"name":       sub,
-				"hasSubkeys": hasChildren,
-			})
-		}
-	}
+	hasMore := end < len(subkeys)
 
-	// --- Values section unchanged ---
-	values := []map[string]interface{}{}
+	nodes := scanSubkeys(k, subkeys[start:end])
+
 	subPath := syscall.StringToUTF16Ptr(relPath)
 	var hKey windows.Handle
 	err = windows.RegOpenKeyEx(windows.Handle(hive), subPath, 0, windows.KEY_READ, &hKey)
 	if err != nil {
-		return subkeyInfos, nil, hasMore, fmt.Errorf("RegOpenKeyEx failed: %w", err)
+		return nodes, nil, hasMore, fmt.Errorf("RegOpenKeyEx failed: %w", err)
 	}
 	defer windows.RegCloseKey(hKey)
 
+	values, err := readRegistryValues(hKey)
+	if err != nil {
+		return nodes, nil, hasMore, err
+	}
+
+	return nodes, values, hasMore, nil
+}
+
+func scanSubkeys(k registry.Key, names []string) []RegistryNode {
+	var result []RegistryNode
+	for _, name := range names {
+		hasChildren := false
+		if subKey, err := registry.OpenKey(k, name, registry.READ); err == nil {
+			if subNames, _ := subKey.ReadSubKeyNames(1); len(subNames) > 0 {
+				hasChildren = true
+			}
+			subKey.Close()
+		}
+		result = append(result, RegistryNode{Name: name, HasSubkeys: hasChildren})
+	}
+	return result
+}
+
+func readRegistryValues(hKey windows.Handle) ([]RegistryValue, error) {
+	var values []RegistryValue
 	var index uint32 = 0
 	for {
 		var valueName [256]uint16
@@ -559,20 +590,17 @@ func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface
 			break
 		}
 		if err != nil {
-			return subkeyInfos, values, hasMore, fmt.Errorf("RegEnumValue failed: %w", err)
+			return nil, fmt.Errorf("RegEnumValue failed: %w", err)
 		}
 
 		name := syscall.UTF16ToString(valueName[:valueNameLen])
-		entry := map[string]interface{}{"name": name}
+		entry := RegistryValue{Name: name}
+
 		switch valType {
-		case windows.REG_SZ:
+		case windows.REG_SZ, windows.REG_EXPAND_SZ:
 			str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
-			entry["type"] = "REG_SZ"
-			entry["data"] = str
-		case windows.REG_EXPAND_SZ:
-			str := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2])
-			entry["type"] = "REG_EXPAND_SZ"
-			entry["data"] = str
+			entry.Type = typeName(valType)
+			entry.Data = str
 		case windows.REG_MULTI_SZ:
 			utf16s := (*[1 << 20]uint16)(unsafe.Pointer(&data[0]))[:dataLen/2]
 			parts := []string{}
@@ -585,33 +613,50 @@ func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface
 					start = i + 1
 				}
 			}
-			entry["type"] = "REG_MULTI_SZ"
-			entry["data"] = parts
+			entry.Type = RegTypeMultiSZ
+			entry.Data = parts
 		case windows.REG_DWORD:
 			val := *(*uint32)(unsafe.Pointer(&data[0]))
-			entry["type"] = "REG_DWORD"
-			entry["data"] = fmt.Sprintf("0x%08X (%d)", val, val)
+			entry.Type = RegTypeDWORD
+			entry.Data = fmt.Sprintf("0x%08X (%d)", val, val)
 		case windows.REG_QWORD:
 			val := *(*uint64)(unsafe.Pointer(&data[0]))
-			entry["type"] = "REG_QWORD"
-			entry["data"] = fmt.Sprintf("0x%X (%d)", val, val)
+			entry.Type = RegTypeQWORD
+			entry.Data = formatQWORD(val)
 		case windows.REG_BINARY:
 			hexBytes := make([]string, dataLen)
 			for i := 0; i < int(dataLen); i++ {
 				hexBytes[i] = fmt.Sprintf("%02X", data[i])
 			}
-			entry["type"] = "REG_BINARY"
-			entry["data"] = strings.Join(hexBytes, " ")
+			entry.Type = RegTypeBinary
+			entry.Data = strings.Join(hexBytes, " ")
 		default:
-			entry["type"] = fmt.Sprintf("UNKNOWN_%d", valType)
-			entry["data"] = "<unsupported>"
+			entry.Type = fmt.Sprintf("UNKNOWN_%d", valType)
+			entry.Data = "<unsupported>"
 		}
 
 		values = append(values, entry)
 		index++
 	}
+	return values, nil
+}
 
-	return subkeyInfos, values, hasMore, nil
+func formatQWORD(val uint64) string {
+	if val <= 0xFFFFFFFF {
+		return fmt.Sprintf("0x%08X (%d)", val, val)
+	}
+	return fmt.Sprintf("0x%X (%d)", val, val)
+}
+
+func typeName(valType uint32) string {
+	switch valType {
+	case windows.REG_SZ:
+		return RegTypeSZ
+	case windows.REG_EXPAND_SZ:
+		return RegTypeExpandSZ
+	default:
+		return fmt.Sprintf("UNKNOWN_%d", valType)
+	}
 }
 
 func CreateRegistryKey(path string) error {
@@ -900,7 +945,7 @@ func CreateRegistryValue(path string, name string, valType string, data interfac
 			}
 		}
 		err = k.SetDWordValue(name, dword)
-		displayData = fmt.Sprintf("0x%X (%d)", dword, dword)
+		displayData = fmt.Sprintf("0x%08X (%d)", dword, dword)
 
 	case "REG_QWORD":
 		var qword uint64
@@ -919,7 +964,13 @@ func CreateRegistryValue(path string, name string, valType string, data interfac
 			}
 		}
 		err = k.SetQWordValue(name, qword)
-		displayData = fmt.Sprintf("0x%X (%d)", qword, qword)
+		var hexStr string
+		if qword <= 0xFFFFFFFF {
+			hexStr = fmt.Sprintf("0x%08X", qword)
+		} else {
+			hexStr = fmt.Sprintf("0x%X", qword)
+		}
+		displayData = fmt.Sprintf("%s (%d)", hexStr, qword)
 
 	case "REG_BINARY":
 		bin := []byte{}
@@ -1158,7 +1209,7 @@ func ModifyRegistryValue(path string, name string, valType string, data interfac
 			}
 		}
 		err = k.SetDWordValue(name, dword)
-		displayData = fmt.Sprintf("0x%X (%d)", dword, dword)
+		displayData = fmt.Sprintf("0x%08X (%d)", dword, dword)
 
 	case "REG_QWORD":
 		var qword uint64
@@ -1179,7 +1230,13 @@ func ModifyRegistryValue(path string, name string, valType string, data interfac
 			}
 		}
 		err = k.SetQWordValue(name, qword)
-		displayData = fmt.Sprintf("0x%X (%d)", qword, qword)
+		var hexStr string
+		if qword <= 0xFFFFFFFF {
+			hexStr = fmt.Sprintf("0x%08X", qword)
+		} else {
+			hexStr = fmt.Sprintf("0x%X", qword)
+		}
+		displayData = fmt.Sprintf("%s (%d)", hexStr, qword)
 
 	case "REG_BINARY":
 		bin := []byte{}
