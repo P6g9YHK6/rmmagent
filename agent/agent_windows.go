@@ -682,21 +682,15 @@ func DeleteRegistryKey(path string) error {
 	cleanPath := strings.TrimRight(path, `\`)
 	// Disallow deleting root hives directly
 	disallowed := []string{
-		"HKEY_LOCAL_MACHINE",
-		"HKEY_CURRENT_USER",
-		"HKEY_CLASSES_ROOT",
-		"HKEY_USERS",
-		"HKEY_CURRENT_CONFIG",
-		"Computer",
+		HKLM, HKCU, HKCR, HKU, HKCC, "Computer",
 	}
-
 	for _, hive := range disallowed {
 		if strings.EqualFold(cleanPath, hive) {
 			return fmt.Errorf("deleting root hive '%s' is not allowed", hive)
 		}
 	}
 
-	hive, relPath, err := getRegistryKeyFromPath(path)
+	hive, relPath, err := getRegistryKeyFromPath(cleanPath)
 	if err != nil {
 		return fmt.Errorf("parsing registry path: %w", err)
 	}
@@ -704,18 +698,18 @@ func DeleteRegistryKey(path string) error {
 	// Open the key with ALL_ACCESS so we can enumerate and delete
 	k, err := registry.OpenKey(hive, relPath, registry.ALL_ACCESS)
 	if err != nil {
-		return fmt.Errorf("failed to open key '%s': %w", path, err)
+		return fmt.Errorf("failed to open key '%s': %w", cleanPath, err)
 	}
 	defer k.Close()
 
 	// Recursively delete all subkeys first
 	subkeys, err := k.ReadSubKeyNames(-1)
 	if err != nil {
-		return fmt.Errorf("failed to read subkeys for '%s': %w", path, err)
+		return fmt.Errorf("failed to read subkeys for '%s': %w", cleanPath, err)
 	}
 
 	for _, sub := range subkeys {
-		childPath := path + "\\" + sub
+		childPath := cleanPath + `\` + sub
 		if err := DeleteRegistryKey(childPath); err != nil {
 			return err
 		}
@@ -725,7 +719,7 @@ func DeleteRegistryKey(path string) error {
 
 	// Delete the key itself
 	if err := registry.DeleteKey(hive, relPath); err != nil {
-		return fmt.Errorf("failed to delete registry key '%s': %w", path, err)
+		return fmt.Errorf("failed to delete registry key '%s': %w", cleanPath, err)
 	}
 
 	return nil
