@@ -4,8 +4,6 @@ github.com/Microsoft/go-winio v0.6.0 h1:slsWYD/zyx7lCXoZVlvQrj0hPTM1HI4+v1sIda2y
 github.com/StackExchange/wmi v1.2.0/go.mod h1:3eOhrUMpNV+6aFIbp5/iudMxNCF27Vw2OZgy4xEx0Fg=
 github.com/StackExchange/wmi v1.2.1 h1:VIkavFPXSjcnS+O8yTq7NI32k0R5Aj+v39y29VYDOSA=
 github.com/StackExchange/wmi v1.2.1/go.mod h1:rcmrprowKIVzvc+NUiLncP2uuArMWLCbu9SBzvHz7e8=
-github.com/akavel/rsrc v0.10.2 h1:Zxm8V5eI1hW4gGaYsJQUhxpjkENuG91ki8B4zCrvEsw=
-github.com/akavel/rsrc v0.10.2/go.mod h1:uLoCtb9J+EyAqh+26kdrTgmzRBFPGOolLWKpdxkKq+c=
 github.com/amidaware/taskmaster v0.0.0-20220111015025-c9cd178bbbf2 h1:1K03qwtvgdJRXJr0nE1qvzFPOmbWHBnnnbeblU7+Bg8=
 github.com/amidaware/taskmaster v0.0.0-20220111015025-c9cd178bbbf2/go.mod h1:5UVBogOiPFWC2F6fKT/Kb9qD4NCsp2y+dCj+pvXnDQE=
 github.com/capnspacehook/taskmaster v0.0.0-20210519235353-1629df7c85e9/go.mod h1:257CYs3Wd/CTlLQ3c72jKv+fFE2MV3WPNnV5jiroYUU=
@@ -93,8 +91,6 @@ github.com/jaypipes/pcidb v1.0.0/go.mod h1:TnYUvqhPBzCKnH34KrIX22kAeEbDCSRJ9cqLR
 github.com/jessevdk/go-flags v1.4.0/go.mod h1:4FA24M0QyGHXBuZZK/XkWh8h0e1EYbRYJSGM75WSRxI=
 github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901 h1:rp+c0RAYOWj8l6qbCUTSiRLG/iKnW3K3/QfPPuSsBt4=
 github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901/go.mod h1:Z86h9688Y0wesXCyonoVr47MasHilkuLMqGhRZ4Hpak=
-github.com/josephspurrier/goversioninfo v1.5.0 h1:9TJtORoyf4YMoWSOo/cXFN9A/lB3PniJ91OxIH6e7Zg=
-github.com/josephspurrier/goversioninfo v1.5.0/go.mod h1:6MoTvFZ6GKJkzcdLnU5T/RGYUbHQbKpYeNP0AgQLd2o=
 github.com/kardianos/service v1.2.2 h1:ZvePhAHfvo0A7Mftk/tEzqEZ7Q4lgnR8sGz4xu1YX60=
 github.com/kardianos/service v1.2.2/go.mod h1:CIMRFEJVL+0DS1a3Nx06NaMn4Dz63Ng6O7dl0qH0zVM=
 github.com/klauspost/compress v1.17.9 h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2qeMA=
