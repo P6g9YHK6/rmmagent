@@ -958,6 +958,38 @@ func CMDShell(shell string, cmdArgs []string, command string, timeout int, detac
 	return [2]string{"", ""}, nil
 }
 
+func BrowseRegistry(path string, page int, pageSize int) ([]map[string]interface{}, []map[string]interface{}, bool, error) {
+	return nil, nil, false, errors.New("registry access is only supported on Windows")
+}
+
+func CreateRegistryKey(path string) error {
+	return errors.New("registry key creation is only supported on Windows")
+}
+
+func DeleteRegistryKey(path string) error {
+	return errors.New("deleting registry keys is only supported on Windows")
+}
+
+func RenameRegistryKey(oldPath, newPath string) error {
+	return errors.New("renaming registry keys is only supported on Windows")
+}
+
+func CreateRegistryValue(path string, name string, valType string, data interface{}) (map[string]interface{}, error) {
+	return nil, errors.New("creating registry values is only supported on Windows")
+}
+
+func DeleteRegistryValue(path string, name string) error {
+	return errors.New("deleting registry values is only supported on Windows")
+}
+
+func RenameRegistryValue(path, oldName, newName string) (string, error) {
+	return "", errors.New("renaming registry values is only supported on Windows")
+}
+
+func ModifyRegistryValue(path string, name string, valType string, data interface{}) (map[string]interface{}, error) {
+	return nil, errors.New("modifying registry values is only supported on Windows")
+}
+
 func CMD(exe string, args []string, timeout int, detached bool) (output [2]string, e error) {
 	return [2]string{"", ""}, nil
 }
