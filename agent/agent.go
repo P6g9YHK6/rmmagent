@@ -36,6 +36,7 @@ import (
 	"github.com/kardianos/service"
 	nats "github.com/nats-io/nats.go"
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/ugorji/go/codec"
 	"github.com/sirupsen/logrus"
 	trmm "github.com/wh1te909/trmm-shared"
 )
@@ -309,6 +310,9 @@ type CmdOptions struct {
 	IsExecutable bool
 	Detached     bool
 	EnvVars      []string
+	Stream       bool
+	Nc           *nats.Conn // nats connection
+	CmdID        string
 }
 
 func (a *Agent) NewCMDOpts() *CmdOptions {
@@ -371,6 +375,9 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				}
 				fmt.Fprintln(&stdoutBuf, line)
 				a.Logger.Debugln(line)
+				if c.Stream {
+					streamLineToNats(line, a.AgentID, c.CmdID, c.Nc)
+				}
 
 			case line, open := <-envCmd.Stderr:
 				if !open {
@@ -379,6 +386,9 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 				}
 				fmt.Fprintln(&stderrBuf, line)
 				a.Logger.Debugln(line)
+				if c.Stream {
+					streamLineToNats(line, a.AgentID, c.CmdID, c.Nc)
+				}
 			}
 		}
 	}()
@@ -418,7 +428,7 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		// done
 	}
 
-	// Wait for goroutine to print everything
+// Wait for goroutine to print everything
 	<-doneChan
 
 	ret := CmdStatus{
@@ -427,7 +437,28 @@ func (a *Agent) CmdV2(c *CmdOptions) CmdStatus {
 		Stderr: CleanString(stderrBuf.String()),
 	}
 	a.Logger.Debugf("%+v\n", ret)
+
+	if c.Stream {
+		finalPayload := map[string]interface{}{
+			"done":      true,
+			"exit_code": finalStatus.Exit,
+		}
+		var finalResp []byte
+		retEnc := codec.NewEncoderBytes(&finalResp, new(codec.MsgpackHandle))
+		_ = retEnc.Encode(finalPayload)
+		subject := a.AgentID + ".cmdoutput." + c.CmdID
+		_ = c.Nc.Publish(subject, finalResp)
+	}
+
 	return ret
+}
+
+func streamLineToNats(line string, agentID string, cmdID string, nc *nats.Conn) {
+	var resp []byte
+	ret := codec.NewEncoderBytes(&resp, new(codec.MsgpackHandle))
+	_ = ret.Encode(line)
+	subject := agentID + ".cmdoutput." + cmdID
+	_ = nc.Publish(subject, resp)
 }
 
 func (a *Agent) GetCPULoadAvg() int {
@@ -710,7 +741,7 @@ func (a *Agent) RunTask(id int) error {
 
 			switch runtime.GOOS {
 			case "windows":
-				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser)
+				out, err := CMDShell(action.Shell, []string{}, action.Command, action.Timeout, false, action.RunAsUser, false, nil, nil, nil)
 				if err != nil {
 					a.Logger.Debugln(err)
 				}

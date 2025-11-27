@@ -44,6 +44,7 @@ type NatsMsg struct {
 	EnvVars                []string          `json:"env_vars"`
 	NushellEnableConfig    bool              `json:"nushell_enable_config"`
 	DenoDefaultPermissions string            `json:"deno_default_permissions"`
+	Stream                 bool              `json:"stream"`
 }
 
 var (
@@ -186,7 +187,11 @@ func (a *Agent) RunRPC() {
 
 				switch runtime.GOOS {
 				case "windows":
-					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser)
+					cmdID := ""
+					if val, ok := p.Data["cmd_id"]; ok {
+						cmdID = val
+					}
+					out, _ := CMDShell(p.Data["shell"], []string{}, p.Data["command"], p.Timeout, false, p.RunAsUser, p.Stream, &a.AgentID, &cmdID, nc)
 					a.Logger.Debugln(out)
 					if out[1] != "" {
 						ret.Encode(out[1])
@@ -200,6 +205,13 @@ func (a *Agent) RunRPC() {
 					opts.Shell = p.Data["shell"]
 					opts.Command = p.Data["command"]
 					opts.Timeout = time.Duration(p.Timeout)
+					opts.Stream = p.Stream
+					opts.Nc = nc
+					cmdID := ""
+					if val, ok := p.Data["cmd_id"]; ok {
+						cmdID = val
+					}
+					opts.CmdID = cmdID
 					out := a.CmdV2(opts)
 					tmp := ""
 					if len(out.Stdout) > 0 {
