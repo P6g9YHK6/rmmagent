@@ -55,6 +55,7 @@ type Agent struct {
 	EXE                string
 	SystemDrive        string
 	WinTmpDir          string
+	UnixTmpDir         string
 	WinRunAsUserTmpDir string
 	MeshInstaller      string
 	MeshSystemEXE      string
@@ -267,6 +268,7 @@ func New(logger *logrus.Logger, version string) *Agent {
 		SystemDrive:        sd,
 		WinTmpDir:          winTempDir,
 		WinRunAsUserTmpDir: winRunAsUserTmpDir,
+		UnixTmpDir:         ac.UnixTmpDir,
 		MeshInstaller:      "meshagent.exe",
 		MeshSystemEXE:      MeshSysExe,
 		MeshSVC:            meshSvcName,
