@@ -36,7 +36,7 @@ jobs:
       - name: Validate Go
         run: |
           set -Eeuo pipefail
-          command -v go >/dev/null || { echo "Go missing"; exit 1; }
+          command -v go >/dev/null || { echo "ERROR: Go is not installed"; exit 1; }
           go version
 
       - name: Resolve version and release eligibility
@@ -44,14 +44,24 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          REF_NAME="${GITHUB_REF##*/}"
           BRANCH="${GITHUB_REF##*/}"
+          REF_NAME="${GITHUB_REF##*/}"
 
-          echo "Ref name: $REF_NAME"
+          echo "Branch detected: $BRANCH"
+          echo "Ref name detected: $REF_NAME"
 
-          if [[ "$BRANCH" == "master" && "$REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "version=$REF_NAME" >> $GITHUB_OUTPUT
-            echo "release=true" >> $GITHUB_OUTPUT
+          if [[ "$BRANCH" == "master" ]]; then
+            if [[ "$REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "version=$REF_NAME" >> $GITHUB_OUTPUT
+              echo "release=true" >> $GITHUB_OUTPUT
+            else
+              echo "ERROR:"
+              echo "ERROR: You are on 'master' but no valid version tag was found."
+              echo "ERROR: Expected tag format: X.Y.Z  (example: 2.10.0)"
+              echo "ERROR: Current ref: '$REF_NAME'"
+              echo "ERROR: Create a proper version tag before pushing to master."
+              exit 1
+            fi
           else
             echo "version=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
             echo "release=false" >> $GITHUB_OUTPUT
@@ -60,7 +70,7 @@ jobs:
       - name: Build binaries
         run: |
           set -Eeuo pipefail
-          trap 'echo "Build failed for ${{ matrix.os }} ${{ matrix.arch }}"; exit 1' ERR
+          trap 'echo "ERROR: Build failed for ${{ matrix.os }} ${{ matrix.arch }}"; exit 1' ERR
 
           mkdir -p dist
 
@@ -80,7 +90,7 @@ jobs:
             -ldflags "-s -w" \
             -o "dist/$OUTPUT"
 
-          test -f "dist/$OUTPUT" || { echo "Binary missing"; exit 1; }
+          test -f "dist/$OUTPUT" || { echo "ERROR: Binary not produced"; exit 1; }
 
       - name: Generate SHA256 checksums
         run: |
@@ -88,11 +98,12 @@ jobs:
           cd dist
 
           if [ -z "$(ls -A .)" ]; then
-            echo "No artifacts to checksum"
+            echo "ERROR: No artifacts found for checksum generation"
             exit 1
           fi
 
           sha256sum * > SHA256SUMS.txt
+          echo "Checksums:"
           cat SHA256SUMS.txt
 
       - name: Upload build artifacts
