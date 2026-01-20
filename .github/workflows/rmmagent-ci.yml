@@ -1,37 +1,31 @@
-name: RMM Agent build
+name: Tactical Agent CI
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-  workflow_dispatch:
-  release:
-    types: [ created ]
+    branches:
+      - master
+      - develop
 
 env:
   GO_VERSION: '1.21'
-  VT_ENABLED: false
 
 jobs:
-  build-package-release:
+  build:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: linux
-            arch: amd64
-          - os: linux
-            arch: arm64
+          - os: windows
+            arch: 386
           - os: windows
             arch: amd64
-          - os: darwin
+          - os: linux
             arch: amd64
-          - os: darwin
-            arch: arm64
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -39,85 +33,83 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build agent
+      - name: Validate Go
         run: |
-          mkdir -p dist installers
+          set -Eeuo pipefail
+          command -v go >/dev/null || { echo "Go missing"; exit 1; }
+          go version
+
+      - name: Resolve version and release eligibility
+        id: version
+        run: |
+          set -Eeuo pipefail
+
+          REF_NAME="${GITHUB_REF##*/}"
+          BRANCH="${GITHUB_REF##*/}"
+
+          echo "Ref name: $REF_NAME"
+
+          if [[ "$BRANCH" == "master" && "$REF_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version=$REF_NAME" >> $GITHUB_OUTPUT
+            echo "release=true" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build binaries
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "Build failed for ${{ matrix.os }} ${{ matrix.arch }}"; exit 1' ERR
+
+          mkdir -p dist
 
           EXT=""
-          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            EXT=".exe"
+          fi
+
+          OUTPUT="tacticalagent-v${{ steps.version.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}$EXT"
+
+          echo "Building $OUTPUT"
 
           CGO_ENABLED=0 \
           GOOS=${{ matrix.os }} \
           GOARCH=${{ matrix.arch }} \
           go build \
-            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
-            -o dist/rmmagent-${{ matrix.os }}-${{ matrix.arch }}$EXT
+            -ldflags "-s -w" \
+            -o "dist/$OUTPUT"
 
-      - name: Generate checksums
+          test -f "dist/$OUTPUT" || { echo "Binary missing"; exit 1; }
+
+      - name: Generate SHA256 checksums
         run: |
+          set -Eeuo pipefail
           cd dist
+
+          if [ -z "$(ls -A .)" ]; then
+            echo "No artifacts to checksum"
+            exit 1
+          fi
+
           sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
-      # ---------- LINUX DEB ----------
-      - name: Build DEB (linux amd64 only)
-        if: matrix.os == 'linux' && matrix.arch == 'amd64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev gcc make
-          sudo gem install --no-document fpm
-
-          mkdir -p pkgroot/usr/local/bin
-          cp dist/rmmagent-linux-amd64 pkgroot/usr/local/bin/rmmagent
-
-          fpm \
-            -s dir \
-            -t deb \
-            -n rmmagent \
-            -v "${GITHUB_REF_NAME:-dev}" \
-            -C pkgroot \
-            -p installers/rmmagent_${GITHUB_REF_NAME:-dev}_amd64.deb
-
-      # ---------- WINDOWS PLACEHOLDER ----------
-      - name: Windows installer note
-        if: matrix.os == 'windows'
-        run: |
-          echo "Windows MSI requires Windows runner" \
-            > installers/rmmagent_windows_README.txt
-
-      # ---------- MACOS PLACEHOLDER ----------
-      - name: macOS installer note
-        if: matrix.os == 'darwin'
-        run: |
-          echo "macOS PKG requires macOS runner" \
-            > installers/rmmagent_macos_README.txt
-
-      # ---------- VIRUSTOTAL ----------
-      - name: VirusTotal scan
-        if: env.VT_ENABLED == 'true'
-        env:
-          VT_API_KEY: ${{ secrets.VT_API_KEY }}
-        run: |
-          for f in dist/rmmagent-*; do
-            curl -X POST \
-              https://www.virustotal.com/api/v3/files \
-              -H "x-apikey: $VT_API_KEY" \
-              -F file=@$f
-          done
-
-      # ---------- UPLOAD ARTIFACTS ----------
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rmmagent-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            dist/*
-            installers/*
+          name: tacticalagent-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
 
-      # ---------- RELEASE ----------
-      - name: Publish release assets
-        if: github.event_name == 'release'
+      - name: Publish GitHub Release
+        if: |
+          github.ref == 'refs/heads/master' &&
+          steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: tacticalagent v${{ steps.version.outputs.version }}
           files: |
             dist/*
-            installers/*
+          fail_on_unmatched_files: true
